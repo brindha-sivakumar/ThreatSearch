@@ -1,27 +1,3 @@
-"""
-evaluate.py — ThreatSearch Phase 3
-Evaluation framework: compares BM25 and LSA retrieval quality using
-ATT&CK technique-to-CVE mappings as ground truth relevance labels.
-
-Metrics computed
-----------------
-  Precision@K  : fraction of top-K results that are relevant
-  MRR          : Mean Reciprocal Rank (how far down is the first relevant result?)
-  nDCG@K       : normalised Discounted Cumulative Gain (rewards top-ranked relevant docs)
-
-Ground truth source
--------------------
-data/index/technique_cve_map.json  — built by `python expander.py build-map`
-Each ATT&CK technique name is issued as a query; the mapped CVE IDs are relevant.
-
-Usage
------
-    python evaluate.py
-    python evaluate.py --top-k 10 --out-dir data/eval
-    python evaluate.py --scorer bm25          # BM25 only
-    python evaluate.py --scorer lsa           # LSA only
-    python evaluate.py --scorer both          # compare (default)
-"""
 
 import argparse
 import json

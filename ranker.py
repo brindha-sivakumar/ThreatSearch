@@ -1,20 +1,3 @@
-"""
-ranker.py — ThreatSearch Phase 2
-Loads the inverted index shards and ranks documents against a query using
-BM25 (default) or TF-IDF.
-
-Design decisions:
-  - Index shards are loaded lazily per query term (memory-efficient for large corpora)
-  - An in-memory posting-list cache avoids re-reading shards for repeated terms
-  - ATT&CK postings receive a source weight boost (default 1.3×) since technique
-    descriptions are higher-signal than generic CVE text
-  - Both BM25 and TF-IDF scorers are available for Phase 3 comparison
-
-BM25 formula:
-    score(d, q) = Σ_t  IDF(t) · tf(t,d)·(k1+1) / (tf(t,d) + k1·(1−b+b·dl/avgdl))
-    IDF(t)      = log((N − df(t) + 0.5) / (df(t) + 0.5) + 1)
-    k1=1.5, b=0.75  (Robertson & Zaragoza 2009 defaults)
-"""
 
 import glob
 import json

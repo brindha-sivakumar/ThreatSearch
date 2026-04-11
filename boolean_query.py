@@ -1,38 +1,3 @@
-"""
-boolean_query.py — ThreatSearch
-Boolean AND / OR / NOT query handler over the inverted index.
-
-Supports queries like:
-    "buffer overflow AND windows"
-    "SMB OR RDP"
-    "remote code execution AND NOT authenticated"
-    "phishing AND (attachment OR link)"
-
-Design
-------
-1. Parse query string into a token tree (AND / OR / NOT operators)
-2. Look up posting sets for each leaf term from the index shards
-3. Apply set operations: AND=intersection, OR=union, NOT=difference
-4. Optionally re-rank the Boolean-filtered candidate set with BM25
-
-Integrates with the existing ranker.py — boolean_filter() returns a
-set of matching doc_ids that is passed to ranker.score() as a candidate
-filter.
-
-Usage (standalone)
-------------------
-    python boolean_query.py "buffer overflow AND windows"
-    python boolean_query.py "SMB OR RDP OR lateral"
-    python boolean_query.py "injection AND NOT authenticated"
-    python boolean_query.py "phishing AND (credential OR attachment)"
-
-Usage (imported by query.py)
------------------------------
-    from boolean_query import BooleanQueryHandler
-    bq = BooleanQueryHandler(index_dir="data/index")
-    matched_ids = bq.execute("smb AND lateral AND NOT patch")
-    # pass matched_ids to ranker.score() as candidate filter
-"""
 
 import glob
 import os

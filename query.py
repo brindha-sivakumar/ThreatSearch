@@ -1,25 +1,3 @@
-"""
-query.py — ThreatSearch Phase 2
-Command-line search interface.  Ties together NLP → expansion → ranking.
-
-Usage:
-    python query.py "buffer overflow SMB"
-    python query.py "lateral movement credential" --top 20
-    python query.py "log4j jndi" --scorer tfidf --no-expand
-    python query.py "T1059 powershell" --explain
-
-Options:
-    --index-dir   DIR     Index directory (default: data/index)
-    --doc-lengths FILE    Doc lengths JSON (default: data/index/doc_lengths.json)
-    --attack      FILE    ATT&CK STIX bundle (default: data/attack/enterprise-attack.json)
-    --nvd-map     FILE    Technique→CVE map (default: data/index/technique_cve_map.json)
-    --scorer      NAME    bm25 (default) or tfidf
-    --top         N       Number of results (default: 10)
-    --no-expand           Disable ATT&CK query expansion
-    --explain             Print expansion details
-    --no-source-weight    Disable ATT&CK source boost
-"""
-
 import argparse
 import os
 import sys
