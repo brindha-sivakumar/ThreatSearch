@@ -1,3 +1,25 @@
+"""
+query.py — ThreatSearch Phase 2
+Command-line search interface.  Ties together NLP → expansion → ranking.
+
+Usage:
+    python query.py "buffer overflow SMB"
+    python query.py "lateral movement credential" --top 20
+    python query.py "log4j jndi" --scorer tfidf --no-expand
+    python query.py "T1059 powershell" --explain
+
+Options:
+    --index-dir   DIR     Index directory (default: data/index)
+    --doc-lengths FILE    Doc lengths JSON (default: data/index/doc_lengths.json)
+    --attack      FILE    ATT&CK STIX bundle (default: data/attack/enterprise-attack.json)
+    --nvd-map     FILE    Technique→CVE map (default: data/index/technique_cve_map.json)
+    --scorer      NAME    bm25 (default) or tfidf
+    --top         N       Number of results (default: 10)
+    --no-expand           Disable ATT&CK query expansion
+    --explain             Print expansion details
+    --no-source-weight    Disable ATT&CK source boost
+"""
+
 import argparse
 import os
 import sys
@@ -69,13 +91,28 @@ def search(
     expand:           bool = True,
     source_weight:    bool = True,
     explain:          bool = False,
+    boolean_mode:     bool = False,
 ) -> list[tuple[str, float, str]]:
     """
     Run a full ThreatSearch query.  Returns ranked (doc_id, score, source) list.
     Can be imported and called programmatically from evaluate.py.
     """
-    # 1. NLP processing
-    _, terms = process_line("Q " + query)
+    # 1. Boolean pre-filter (if query contains AND / OR / NOT)
+    import re as _re
+    boolean_filter_ids = None
+    is_boolean = boolean_mode or bool(_re.search(r"\b(AND|OR|NOT)\b", query, _re.IGNORECASE))
+    if is_boolean:
+        from boolean_query import BooleanQueryHandler
+        bq = BooleanQueryHandler(index_dir)
+        boolean_filter_ids = bq.execute(query)
+        if not boolean_filter_ids:
+            print("[query] Boolean filter matched 0 documents.", file=sys.stderr)
+            return []
+        print(f"[query] Boolean filter: {len(boolean_filter_ids):,} candidate docs", file=sys.stderr)
+
+    # 2. NLP processing (strip Boolean operators before stemming)
+    clean_query = _re.sub(r"\b(AND|OR|NOT)\b", " ", query, flags=_re.IGNORECASE)
+    _, terms = process_line("Q " + clean_query)
     if not terms:
         print("[query] No indexable terms after NLP processing.", file=sys.stderr)
         return []
@@ -103,7 +140,8 @@ def search(
 
     # 3. Rank
     t0      = time.perf_counter()
-    results = ranker.score(expanded_terms, top_n=top_n, term_weights=term_weights)
+    results = ranker.score(expanded_terms, top_n=top_n, term_weights=term_weights,
+                           candidate_ids=boolean_filter_ids)
     elapsed = time.perf_counter() - t0
 
     print_results(results, terms, elapsed, explain_text)
@@ -180,6 +218,8 @@ if __name__ == "__main__":
     ap.add_argument("--no-expand",       action="store_true")
     ap.add_argument("--explain",         action="store_true")
     ap.add_argument("--no-source-weight",action="store_true")
+    ap.add_argument("--boolean", action="store_true",
+                    help="Force Boolean mode (auto-detected from AND/OR/NOT in query)")
     args = ap.parse_args()
 
     # Interactive mode if no query given
@@ -197,4 +237,5 @@ if __name__ == "__main__":
             expand           = not args.no_expand,
             source_weight    = not args.no_source_weight,
             explain          = args.explain,
+            boolean_mode     = getattr(args, 'boolean', False),
         )

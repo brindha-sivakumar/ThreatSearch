@@ -92,6 +92,24 @@ Uses cosine similarity in latent space to find documents semantically related to
 
 ---
 
+"""
+topic_model.py — ThreatSearch Phase 3
+LDA topic modeling over the CVE + ATT&CK corpus.
+
+Reads corpus shards produced by ingest.py, trains a Latent Dirichlet
+Allocation model using gensim, and outputs:
+  - data/lda/lda_model          : saved gensim model
+  - data/lda/topic_terms.json   : top N terms per topic
+  - data/lda/doc_topics.json    : per-document dominant topic
+  - data/lda/coherence.txt      : model coherence score (C_v)
+
+Usage
+-----
+    python topic_model.py
+    python topic_model.py --topics 20 --corpus-dir data/corpus --out-dir data/lda
+    python topic_model.py --query "buffer overflow memory"   # assign query to topic
+"""
+
 ## Project Structure
 ```text
 data/

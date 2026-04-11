@@ -1,0 +1,286 @@
+import argparse
+import glob
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(__file__))
+from nlp import process_line
+
+
+# ── Corpus reader ─────────────────────────────────────────────────────────────
+
+def stream_corpus(corpus_dir: str):
+    """
+    Yield (doc_id, token_list) for every document in corpus shards.
+    Filters out ATT&CK technique documents — LDA topic discovery is most
+    meaningful on the larger, more varied CVE description corpus.
+    """
+    shard_files = sorted(glob.glob(os.path.join(corpus_dir, "*.txt")))
+    if not shard_files:
+        raise FileNotFoundError(f"No .txt shards found in {corpus_dir}")
+
+    for path in shard_files:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                doc_id, tokens = process_line(line)
+                if not doc_id or not tokens:
+                    continue
+                yield doc_id, tokens
+
+
+def load_corpus_for_lda(corpus_dir: str, min_doc_len: int = 5):
+    """
+    Load full corpus into memory as list of token lists.
+    Also returns doc_ids for later mapping topics back to documents.
+
+    min_doc_len: skip documents with fewer than this many tokens
+                 (very short CVE descriptions add noise to LDA)
+    """
+    print("[lda] loading corpus …", file=sys.stderr)
+    doc_ids, texts = [], []
+    for doc_id, tokens in stream_corpus(corpus_dir):
+        if len(tokens) >= min_doc_len:
+            doc_ids.append(doc_id)
+            texts.append(tokens)
+    print(f"[lda] {len(texts):,} documents loaded", file=sys.stderr)
+    return doc_ids, texts
+
+
+# ── LDA training ──────────────────────────────────────────────────────────────
+
+def train_lda(texts: list[list[str]], n_topics: int = 20, passes: int = 10):
+    """
+    Build gensim dictionary + corpus, train LDA model.
+
+    Parameters
+    ----------
+    texts    : list of token lists (one per document)
+    n_topics : number of latent topics to discover
+    passes   : training passes over the corpus (more = better, slower)
+
+    Returns
+    -------
+    lda_model, gensim_dictionary, gensim_corpus
+    """
+    try:
+        import gensim
+        from gensim import corpora
+        from gensim.models import LdaModel
+    except ImportError:
+        print("[lda] ERROR: gensim not installed. Run: pip install gensim", file=sys.stderr)
+        sys.exit(1)
+
+    print("[lda] building gensim dictionary …", file=sys.stderr)
+    dictionary = corpora.Dictionary(texts)
+
+    # Filter extremes: drop terms in <5 docs or >50% of docs (noise reduction)
+    dictionary.filter_extremes(no_below=5, no_above=0.5)
+    print(f"[lda] dictionary after filtering: {len(dictionary):,} terms", file=sys.stderr)
+
+    print("[lda] building bag-of-words corpus …", file=sys.stderr)
+    bow_corpus = [dictionary.doc2bow(text) for text in texts]
+
+    print(f"[lda] training LDA  n_topics={n_topics}  passes={passes} …", file=sys.stderr)
+    t0 = time.perf_counter()
+    lda_model = LdaModel(
+        corpus         = bow_corpus,
+        id2word        = dictionary,
+        num_topics     = n_topics,
+        passes         = passes,
+        alpha          = "auto",      # asymmetric prior — better for specialised corpora
+        eta            = "auto",
+        random_state   = 42,
+        per_word_topics= True,
+    )
+    elapsed = time.perf_counter() - t0
+    print(f"[lda] training complete in {elapsed:.1f}s", file=sys.stderr)
+
+    return lda_model, dictionary, bow_corpus
+
+
+# ── Coherence scoring ─────────────────────────────────────────────────────────
+
+def compute_coherence(lda_model, texts, dictionary) -> float:
+    """
+    Compute C_v coherence score (higher = more interpretable topics).
+    Typical range: 0.4–0.7. Above 0.5 is considered good.
+    """
+    try:
+        from gensim.models import CoherenceModel
+        cm = CoherenceModel(
+            model      = lda_model,
+            texts      = texts,
+            dictionary = dictionary,
+            coherence  = "c_v",
+        )
+        score = cm.get_coherence()
+        print(f"[lda] coherence (C_v): {score:.4f}", file=sys.stderr)
+        return score
+    except Exception as e:
+        print(f"[lda] coherence computation failed: {e}", file=sys.stderr)
+        return 0.0
+
+
+# ── Output writers ────────────────────────────────────────────────────────────
+
+def extract_topic_terms(lda_model, n_top_words: int = 15) -> list[dict]:
+    """
+    Return a list of topic dicts:
+    [ { "topic_id": 0, "terms": [{"word": "...", "weight": 0.03}, ...] }, ... ]
+    """
+    topics = []
+    for topic_id in range(lda_model.num_topics):
+        top = lda_model.show_topic(topic_id, topn=n_top_words)
+        topics.append({
+            "topic_id": topic_id,
+            "terms"   : [{"word": w, "weight": float(p)} for w, p in top],
+        })
+    return topics
+
+
+def assign_doc_topics(lda_model, bow_corpus, doc_ids) -> list[dict]:
+    """
+    Assign each document to its dominant topic.
+    Returns list of { doc_id, dominant_topic, confidence }.
+    """
+    assignments = []
+    for doc_id, bow in zip(doc_ids, bow_corpus):
+        topic_dist = lda_model.get_document_topics(bow, minimum_probability=0.0)
+        dominant   = max(topic_dist, key=lambda x: x[1])
+        assignments.append({
+            "doc_id"         : doc_id,
+            "dominant_topic" : int(dominant[0]),
+            "confidence"     : float(dominant[1]),
+        })
+    return assignments
+
+
+def save_outputs(
+    lda_model,
+    topics:      list[dict],
+    assignments: list[dict],
+    coherence:   float,
+    out_dir:     str,
+):
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Gensim model (for later query assignment)
+    lda_model.save(os.path.join(out_dir, "lda_model"))
+
+    # Topic terms JSON
+    topic_path = os.path.join(out_dir, "topic_terms.json")
+    with open(topic_path, "w", encoding="utf-8") as f:
+        json.dump(topics, f, indent=2)
+
+    # Doc→topic assignments JSON
+    doc_path = os.path.join(out_dir, "doc_topics.json")
+    with open(doc_path, "w", encoding="utf-8") as f:
+        json.dump(assignments, f, indent=2)
+
+    # Coherence score
+    coh_path = os.path.join(out_dir, "coherence.txt")
+    with open(coh_path, "w") as f:
+        f.write(f"C_v coherence: {coherence:.4f}\n")
+        f.write(f"n_topics: {lda_model.num_topics}\n")
+        f.write(f"n_docs: {len(assignments)}\n")
+
+    print(f"[lda] outputs saved to {out_dir}/", file=sys.stderr)
+    print(f"  topic_terms.json  — {len(topics)} topics", file=sys.stderr)
+    print(f"  doc_topics.json   — {len(assignments):,} document assignments", file=sys.stderr)
+    print(f"  coherence.txt     — C_v = {coherence:.4f}", file=sys.stderr)
+
+
+def print_topics(topics: list[dict], n_show: int = 5):
+    """Pretty-print top topics to stdout."""
+    print(f"\n── Top {n_show} topics (by first term weight) ──────────────────")
+    for t in topics[:n_show]:
+        terms = ", ".join(w["word"] for w in t["terms"][:8])
+        print(f"  Topic {t['topic_id']:02d}: {terms}")
+    print()
+
+
+# ── Query topic assignment ────────────────────────────────────────────────────
+
+def assign_query_to_topic(query: str, lda_dir: str):
+    """
+    Given a free-text query, return its most likely topic.
+    Useful for query routing: direct the query to documents in the same topic cluster.
+    """
+    try:
+        from gensim.models import LdaModel
+        from gensim import corpora
+    except ImportError:
+        print("gensim not installed.", file=sys.stderr)
+        return
+
+    model_path = os.path.join(lda_dir, "lda_model")
+    if not os.path.exists(model_path):
+        print(f"LDA model not found at {model_path}", file=sys.stderr)
+        return
+
+    lda_model  = LdaModel.load(model_path)
+    dictionary = lda_model.id2word
+
+    _, tokens  = process_line("Q " + query)
+    bow        = dictionary.doc2bow(tokens)
+    dist       = lda_model.get_document_topics(bow, minimum_probability=0.0)
+    dist_sorted= sorted(dist, key=lambda x: x[1], reverse=True)
+
+    # Load topic terms for display
+    topic_path = os.path.join(lda_dir, "topic_terms.json")
+    topic_terms = {}
+    if os.path.exists(topic_path):
+        with open(topic_path) as f:
+            for t in json.load(f):
+                topic_terms[t["topic_id"]] = [w["word"] for w in t["terms"][:6]]
+
+    print(f"\nQuery: '{query}'")
+    print(f"Processed tokens: {tokens}")
+    print(f"\nTop 3 topic assignments:")
+    for tid, prob in dist_sorted[:3]:
+        terms = ", ".join(topic_terms.get(tid, []))
+        print(f"  Topic {tid:02d}  p={prob:.3f}  [{terms}]")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def run(corpus_dir, out_dir, n_topics, passes, n_top_words, min_doc_len):
+    doc_ids, texts = load_corpus_for_lda(corpus_dir, min_doc_len)
+
+    lda_model, dictionary, bow_corpus = train_lda(texts, n_topics, passes)
+    coherence  = compute_coherence(lda_model, texts, dictionary)
+    topics     = extract_topic_terms(lda_model, n_top_words)
+    assignments= assign_doc_topics(lda_model, bow_corpus, doc_ids)
+
+    save_outputs(lda_model, topics, assignments, coherence, out_dir)
+    print_topics(topics)
+    return lda_model, topics, assignments, coherence
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description="ThreatSearch LDA topic modeler")
+    ap.add_argument("--corpus-dir",   default="data/corpus")
+    ap.add_argument("--out-dir",      default="data/lda")
+    ap.add_argument("--topics",       default=20,  type=int, help="Number of LDA topics")
+    ap.add_argument("--passes",       default=10,  type=int, help="Training passes")
+    ap.add_argument("--top-words",    default=15,  type=int, help="Top words per topic to save")
+    ap.add_argument("--min-doc-len",  default=5,   type=int, help="Skip docs shorter than this")
+    ap.add_argument("--query",        default=None,
+                    help="If set, assign this query to a topic instead of training")
+    ap.add_argument("--lda-dir",      default="data/lda",
+                    help="LDA model dir (for --query mode)")
+    args = ap.parse_args()
+
+    if args.query:
+        assign_query_to_topic(args.query, args.lda_dir)
+    else:
+        run(
+            corpus_dir  = args.corpus_dir,
+            out_dir     = args.out_dir,
+            n_topics    = args.topics,
+            passes      = args.passes,
+            n_top_words = args.top_words,
+            min_doc_len = args.min_doc_len,
+        )
