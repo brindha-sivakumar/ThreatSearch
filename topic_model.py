@@ -8,39 +8,116 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 from nlp import process_line
 
+# ── Topic-model-specific NLP ──────────────────────────────────────────────────
+# Separate from the index NLP pipeline intentionally:
+#   - No stemming        → readable topic words ("injection" not "inject")
+#   - No structured IDs  → CVE-XXX / CWE-XXX add no topical meaning
+#   - Aggressive extras  → boilerplate CVE words that survive standard stopwords
+#   - Min word length 4  → drops "fix", "due", "set", "call" etc.
+
+import re as _re
+import string as _string
+
+_TOPIC_EXTRA_STOPS = {
+    # CVE boilerplate that survives standard stopwords
+    "fix", "fixed", "fixes", "patch", "patched", "call", "called",
+    "make", "makes", "made", "lead", "leads", "cause", "causes",
+    "allow", "allows", "allowed", "could", "would", "should",
+    "prior", "need", "needs", "check", "checks", "due",
+    "set", "sets", "get", "gets", "use", "used", "uses",
+    "include", "includes", "contain", "contains", "provide",
+    "none", "note", "known", "public", "record", "number",
+    "result", "issue", "state", "type", "name", "list",
+    "version", "update", "exist", "occur", "happen",
+    "early", "late", "base", "refer", "reject", "resolve",
+    "reserve", "common", "possible", "reason", "require",
+    "application", "component", "function", "endpoint",
+    "request", "response", "data", "information", "access",
+    # Expanded acronyms that become long unreadable strings
+    "commonvulnerabilityexposure", "remotecodeexecution",
+    "localprivilegeescalation", "denialofservice",
+    "crosssitescripting", "sqlinjection",
+}
+
+# Structured ID pattern — skip these in topic NLP
+_TOPIC_ID_PAT = _re.compile(
+    r"^(CVE-\d{4}-\d+|CWE-\d+|T\d{4}(\.\d{3})?|TA\d{4})$",
+    _re.IGNORECASE,
+)
+
+def topic_tokenize(text: str) -> list[str]:
+    """
+    NLP pipeline tailored for LDA topic modeling:
+    - NO stemming   → preserves readable word forms
+    - NO structured IDs   → CVE/CWE/ATT&CK IDs excluded
+    - Aggressive stopword list including CVE boilerplate
+    - Minimum 4-character alphabetic tokens only
+    """
+    try:
+        from nltk.corpus import stopwords as _sw
+        base_stops = set(_sw.words("english"))
+    except Exception:
+        base_stops = set()
+
+    all_stops = base_stops | _TOPIC_EXTRA_STOPS
+
+    # Strip HTML/markup
+    text = _re.sub(r"<.*?>", " ", text)
+    text = _re.sub(r"&[a-z]+;", " ", text)
+    text = _re.sub(r"https?://\S+", " ", text)
+
+    tokens = []
+    for token in text.lower().split():
+        # Drop structured IDs
+        if _TOPIC_ID_PAT.match(token):
+            continue
+        # Keep only alphabetic characters
+        alpha = _re.sub(r"[^a-z]", "", token)
+        # Minimum length 4, not a stopword
+        if len(alpha) >= 4 and alpha not in all_stops:
+            tokens.append(alpha)
+
+    return tokens
+
 
 # ── Corpus reader ─────────────────────────────────────────────────────────────
 
 def stream_corpus(corpus_dir: str):
     """
-    Yield (doc_id, token_list) for every document in corpus shards.
-    Filters out ATT&CK technique documents — LDA topic discovery is most
-    meaningful on the larger, more varied CVE description corpus.
+    Yield (doc_id, raw_text) for every NVD document in corpus shards.
+    ATT&CK technique documents are excluded — LDA is most meaningful
+    over the larger, more varied CVE description corpus.
+    Raw text is returned so topic_tokenize() (not the index NLP) is applied.
     """
     shard_files = sorted(glob.glob(os.path.join(corpus_dir, "*.txt")))
     if not shard_files:
         raise FileNotFoundError(f"No .txt shards found in {corpus_dir}")
 
     for path in shard_files:
+        # Skip ATT&CK shards for LDA
+        if "attack" in os.path.basename(path).lower():
+            continue
         with open(path, encoding="utf-8") as f:
             for line in f:
-                doc_id, tokens = process_line(line)
-                if not doc_id or not tokens:
+                parts = line.strip().split(None, 1)
+                if len(parts) < 2:
                     continue
-                yield doc_id, tokens
+                doc_id   = parts[0]
+                raw_text = parts[1]
+                yield doc_id, raw_text
 
 
 def load_corpus_for_lda(corpus_dir: str, min_doc_len: int = 5):
     """
-    Load full corpus into memory as list of token lists.
-    Also returns doc_ids for later mapping topics back to documents.
+    Load CVE corpus for LDA using topic_tokenize() — no stemming, no IDs,
+    readable word forms for interpretable topic output.
 
     min_doc_len: skip documents with fewer than this many tokens
-                 (very short CVE descriptions add noise to LDA)
     """
-    print("[lda] loading corpus …", file=sys.stderr)
+    print("[lda] loading corpus with topic NLP (no stemming, no IDs) …", file=sys.stderr)
     doc_ids, texts = [], []
-    for doc_id, tokens in stream_corpus(corpus_dir):
+    for doc_id, raw_text in stream_corpus(corpus_dir):
+        tokens = topic_tokenize(raw_text)
         if len(tokens) >= min_doc_len:
             doc_ids.append(doc_id)
             texts.append(tokens)
@@ -76,7 +153,9 @@ def train_lda(texts: list[list[str]], n_topics: int = 20, passes: int = 10):
     dictionary = corpora.Dictionary(texts)
 
     # Filter extremes: drop terms in <5 docs or >50% of docs (noise reduction)
-    dictionary.filter_extremes(no_below=5, no_above=0.5)
+    # no_above=0.4: drops terms in >40% of docs (near-universal boilerplate)
+    # no_below=10: requires a term to appear in at least 10 docs
+    dictionary.filter_extremes(no_below=10, no_above=0.4)
     print(f"[lda] dictionary after filtering: {len(dictionary):,} terms", file=sys.stderr)
 
     print("[lda] building bag-of-words corpus …", file=sys.stderr)
@@ -223,7 +302,7 @@ def assign_query_to_topic(query: str, lda_dir: str):
     lda_model  = LdaModel.load(model_path)
     dictionary = lda_model.id2word
 
-    _, tokens  = process_line("Q " + query)
+    tokens = topic_tokenize(query)
     bow        = dictionary.doc2bow(tokens)
     dist       = lda_model.get_document_topics(bow, minimum_probability=0.0)
     dist_sorted= sorted(dist, key=lambda x: x[1], reverse=True)
