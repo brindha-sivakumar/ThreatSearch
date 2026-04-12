@@ -11,10 +11,12 @@ The system extends a basic inverted index pipeline with a full retrieval stack: 
 ---
 ### Setup
 
+```python
 pip install nltk scikit-learn scipy numpy gensim
 import nltk
 nltk.download('stopwords')
 git clone https://github.com/brindha-sivakumar/ThreatSearch.git
+```
 
 ### Download the datasets
 
