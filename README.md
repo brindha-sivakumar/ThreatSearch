@@ -160,6 +160,7 @@ ATT&CK query expander. At startup, indexes every ATT&CK technique by the stemmed
 
 **`query.py`**  
 Unified search interface. Auto-detects Boolean queries (from AND/OR/NOT keywords), strips operators before NLP processing, runs the Boolean handler if needed, then calls the expander and ranker. Supports single-query mode and interactive mode (loads the index once, much faster for multiple queries). Generates clickable NVD and ATT&CK URLs in the results output.
+
 ---
 
 ### LSA — Memory-safe semantic index
