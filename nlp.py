@@ -16,21 +16,25 @@ _ps = PorterStemmer()
 _BASE_STOPS = set(stopwords.words("english"))
 
 _SECURITY_STOPS = {
-    # Near-universal in CVE descriptions
-    "vulnerability", "vulnerabilities", "vulnerable", "issue", "issues",
+    # Generic CVE boilerplate
+    "vulnerability", "vulnerabilities", "issue", "issues",
     "advisory", "advisories", "update", "updated", "updates",
-    "security", "securely", "allow", "allows", "allowed", "allowing",
-    "attacker", "attackers", "attack", "attacks",
-    "version", "versions", "affect", "affected", "affecting", "affects",
-    "product", "products", "system", "systems", "user", "users",
-    "remote", "local", "arbitrary", "execute", "execution",
+    "securely", "allow", "allows", "allowed", "allowing",
+    "affect", "affecting", "affects",
+    "product", "products",
     # Near-universal in ATT&CK descriptions
     "adversary", "adversaries", "technique", "techniques",
     "may", "use", "used", "using", "via", "also", "well",
     "example", "examples", "following", "specific", "various",
-    # Generic English words that survive NLTK but add no value here
+    # Generic English connectives that survive NLTK
     "however", "therefore", "thus", "although", "whether",
     "within", "without", "across", "further",
+     # These appear in raw NVD data but carry no retrieval meaning
+    "nvdcwenoinfo",            # placeholder: no CWE assigned
+    "nvdcweother",             # placeholder: CWE category "Other"
+    "nvdcwenoapplicable",      # placeholder: CWE not applicable
+    "commonvulnerabilityexposure",  # expanded form of "CVE" acronym
+    "resolved", "rejected", "withdrawn", "candidate",
 }
 
 STOP_WORDS = _BASE_STOPS | _SECURITY_STOPS

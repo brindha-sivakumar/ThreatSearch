@@ -146,6 +146,15 @@ Two-pass inverted index builder. Pass 1 streams all corpus shards once to build 
 # TF-IDF instead of BM25, no expansion
 !python query.py "lateral movement credential" --scorer tfidf --no-expand --top 20
 ```
+
+```python
+# Verify the map has content
+import json
+with open("data/index/technique_cve_map.json") as f:
+    m = json.load(f)
+total = sum(len(v) for v in m.values())
+print(f"{len(m)} techniques mapped to {total:,} CVEs")
+```
 **`run_doc_lengths.py`**  
 Scans all corpus shards and computes the token count per document. Writes `doc_lengths.json`. BM25's length normalisation term requires knowing each document's length relative to the corpus average — without this file the BM25 scorer falls back to the corpus average for every document.
 
@@ -210,13 +219,15 @@ Loads the two numpy arrays at startup. Each query is a weighted average of the q
 
 ---
 
-### Phase 3 — Analysis and evaluation
+### Phase 3 — LDA topic modeling
 
-**What this phase does:** LDA topic modeling discovers recurring vulnerability themes in the CVE corpus without supervision. The evaluation framework issues ATT&CK technique names as queries and measures retrieval quality (Precision@K, MRR, nDCG@K) for both BM25 and LSA, producing a comparison table for the final report.
+**Prerequisite:** Phase 1 ingestion complete (`data/corpus/` must exist). Phase 2 and LSA are **not** required — `topic_model.py` reads corpus shards directly, not the inverted index.
 
-**Files involved:** `topic_model.py`, `evaluate.py`
+**What this phase does:** Trains an LDA model over CVE descriptions to discover recurring vulnerability themes (e.g. memory corruption, authentication bypass, injection attacks) without any manual labelling. It uses its own `topic_tokenize()` preprocessing pipeline — deliberately separate from the index NLP — which skips stemming (so topic words stay readable), strips structured IDs like CVE-XXXX and CWE-NNN (which carry no topical meaning), and removes an extended list of CVE boilerplate words that survive standard stopword lists (`fix`, `call`, `make`, `prior`, `resolve`, etc.).
 
-**Outputs:** `data/lda/topic_terms.json`, `data/lda/doc_topics.json`, `data/eval/eval_summary.csv`
+**Files involved:** `topic_model.py`
+
+**Outputs:** `data/lda/lda_model`, `data/lda/topic_terms.json`, `data/lda/doc_topics.json`, `data/lda/coherence.txt`
 
 ```python
 # Install gensim (needed for LDA only)
@@ -242,23 +253,74 @@ for t in topics[:10]:
 ```
 
 ```python
+# Check coherence score (written to data/lda/coherence.txt)
+# C_v above 0.5 = interpretable topics; above 0.6 = good
+with open("data/lda/coherence.txt") as f:
+    print(f.read())
+```
+
+```python
 # Assign a query to its closest topic
 !python topic_model.py --query "heap overflow privilege escalation kernel"
 ```
 
-```python
-# Evaluation: BM25 vs LSA using ATT&CK ground truth
-# Outputs a comparison table to stdout and eval_summary.csv
-!python evaluate.py --scorer both --top-k 10
-```
-
-
 **`topic_model.py`**  
 Trains an LDA model over CVE descriptions using gensim. Reads corpus shards from data/corpus/nvd_*.txt directly — the inverted index is not involved. Uses its own topic_tokenize() function that is deliberately separate from the index NLP pipeline: no stemming (so words stay readable as injection not inject), no structured IDs (CVE-XXXX and CWE-NNN are excluded as they carry no topical meaning), and an extended boilerplate stopword list targeting words common to almost every CVE description (fix, call, make, prior, resolve, etc.). Vocabulary is further filtered by filter_extremes — terms in fewer than 10 documents or more than 40% of documents are dropped. Writes topic_terms.json (top 15 words per topic with probability weights), doc_topics.json (dominant topic and confidence per CVE), and coherence.txt (C_v coherence score — above 0.5 indicates interpretable topics, above 0.6 is good). Also supports --query mode to assign new free-text to its closest topic without retraining.
+
+---
+
+### Phase 3 — Analysis and Evaluation framework
+
+**Prerequisite:** Phase 2 complete (`data/index/doc_lengths.json` and `data/index/technique_cve_map.json` must exist). LSA index required if running `--scorer lsa` or `--scorer both`. `topic_model.py` must have been run (`data/lda/` must exist). The tactic heatmap additionally requires `data/index/technique_cve_map.json` (built by `expander.py build-map`).
+
+**What this phase does:** Issues ATT&CK technique names as queries and measures retrieval quality for BM25 and LSA using the technique→CVE mappings as ground truth relevance labels. Produces a comparison table for the final report. Produces two complementary visualizations of the LDA topic model outputs, directly implementing the "threat-cluster visualization" stretch goal from the project proposal.
+
+**Files involved:** `evaluate.py`, `visualize.py`
+
+**Outputs:** `data/eval/eval_results.json`, `data/eval/eval_summary.csv`, `data/viz/topic_wordclouds.png`, `data/viz/tactic_heatmap.png`
+
+```python
+# Evaluate BM25 vs LSA (requires both Phase 2 and LSA index)
+!python evaluate.py --scorer both --top-k 10
+
+# BM25 only (if LSA index not yet built)
+!python evaluate.py --scorer bm25 --top-k 10
+
+# Adjust K for Precision@K and nDCG@K
+!python evaluate.py --scorer both --top-k 5
+```
+
+```python
+# View the summary CSV — paste this table directly into your report
+import pandas as pd
+df = pd.read_csv("data/eval/eval_summary.csv")
+print(df.to_string(index=False))
+```
+```python
+# Install visualization dependencies
+!pip install pyldavis wordcloud matplotlib scikit-learn
+```
+
+```python
+# Step 2: Generate visualizations
+!python visualize.py
+
+# Or generate individually:
+!python visualize.py --only wordclouds   # word clouds only
+!python visualize.py --only heatmap      # tactic heatmap only
+```
+**What each visualization shows:**
+
+| Output | What it shows | Best for |
+|---|---|---|
+| `topic_wordclouds.png` | One word cloud per topic; word size = LDA weight | Quick overview of all topics at once |
+| `tactic_heatmap.png` | ATT&CK kill-chain tactics × LDA topics; cell = CVE count | Connecting vulnerability themes to attack stages |
 
 **`evaluate.py`**  
 Evaluation framework. Uses the technique→CVE map from expander.py as ground truth: each ATT&CK technique name is issued as a query, and its mapped CVEs are the relevant documents. Computes Precision@K (fraction of top-K results that are relevant), MRR (reciprocal rank of the first relevant result), and nDCG@K (position-weighted relevance score) for both BM25 and LSA. Writes eval_results.json (per-query breakdown) and eval_summary.csv (aggregate comparison table for the report).
 
+**`visualize.py`**  
+Threat-cluster visualizations over the LDA outputs. (1) **Word clouds** — one per topic, word size proportional to LDA probability weight, rendered on a dark background for readability. (2) **Tactic heatmap** — matrix of ATT&CK kill-chain tactics (rows) × LDA topics (columns), cell value = CVE count; shows how vulnerability themes align with attack stages. The heatmap requires `technique_cve_map.json` and skips gracefully if it is absent. Uses the technique→CVE map from `expander.py` as ground truth: each ATT&CK technique name is issued as a query, and its mapped CVEs are the relevant documents. Computes Precision@K (fraction of top-K results that are relevant), MRR (reciprocal rank of the first relevant result), and nDCG@K (position-weighted relevance score) for both BM25 and LSA. Writes `eval_results.json` (per-query breakdown) and `eval_summary.csv` (aggregate comparison table for the report).
 ---
 
 ## Folder Structure After Full Run
@@ -270,8 +332,6 @@ Project/
 ├── boolean_query.py   query.py
 ├── lsa_build.py       lsa_ranker.py
 ├── topic_model.py     evaluate.py
-├── test_phase1.py     test_phase2.py
-├── test_lsa.py        test_phase3.py     test_boolean.py
 └── data/
     ├── nvd/                    ← NVD .json.gz feed files (manual download)
     ├── attack/
