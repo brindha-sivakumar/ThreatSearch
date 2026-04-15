@@ -92,24 +92,24 @@ class Ranker:
         merged_postings: dict[str, tuple[int, str]] = {}
         total_df = 0
 
-        for shard_path in self._shard_files:
-            with open(shard_path, encoding="utf-8") as f:
-                for line in f:
-                    parts = line.split()
-                    if not parts or int(parts[0]) != wc:
+        
+        with open(merged_index, encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if not parts or int(parts[0]) != wc:
+                    continue
+                for posting_str in parts[3:]:
+                    inner = posting_str.strip("()")
+                    segments = inner.rsplit(",", 2)
+                    if len(segments) != 3:
                         continue
-                    for posting_str in parts[3:]:
-                        inner = posting_str.strip("()")
-                        segments = inner.rsplit(",", 2)
-                        if len(segments) != 3:
-                            continue
-                        doc_id, tf_str, src = segments
-                        try:
-                            tf = int(tf_str)
-                        except ValueError:
-                            continue
-                        merged_postings[doc_id] = (tf, src)
-                    break   # found the term in this shard, move to next shard
+                    doc_id, tf_str, src = segments
+                    try:
+                        tf = int(tf_str)
+                    except ValueError:
+                        continue
+                    merged_postings[doc_id] = (tf, src)
+                break   # found the term in this shard, move to next shard
 
         self._posting_cache[wc] = merged_postings
         self._df_cache[wc]      = len(merged_postings)
