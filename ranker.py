@@ -52,7 +52,7 @@ class Ranker:
 
         print(
             f"[ranker] ready — {len(self.word_code):,} terms, "
-            f"{self.N:,} docs, {len(self._shard_files)} shards, scorer={scorer}",
+            f"{self.N:,} docs, {len(self.merged_index)} shards, scorer={scorer}",
             file=sys.stderr,
         )
 
