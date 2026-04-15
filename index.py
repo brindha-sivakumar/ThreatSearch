@@ -180,4 +180,4 @@ if __name__ == "__main__":
     ap.add_argument("--no-verify",  action="store_true",   help="Skip word-code consistency check")
     args = ap.parse_args()
 
-    build_index(args.corpus_dir, args.out_dir, verify=not args.no_verify)
+    build_index(args.corpus_dir, args.out_dir)
