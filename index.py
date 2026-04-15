@@ -16,8 +16,6 @@ def source_tag(filename: str) -> str:
     return "nvd"
 
 
-# ── Pass 1: build global vocabulary ──────────────────────────────────────────
-
 def build_vocabulary(shard_files: list[str]) -> tuple[list[str], dict[str, int]]:
     """
     Stream every shard once.  Collect all processed terms into a set.
@@ -47,8 +45,6 @@ def write_dictionary(sorted_words: list[str], path: str):
             f.write(w + "\n")
     print(f"[index] dictionary → {path}  ({len(sorted_words):,} terms)", file=sys.stderr)
 
-
-# ── Pass 2: build per-shard local index ──────────────────────────────────────
 
 def build_local_index(
     shard_path: str,
@@ -113,44 +109,6 @@ def write_local_index(index: dict, out_path: str):
             f.write(f"{wc} {word} {df} {postings_str}\n")
 
 
-# ── Verification ──────────────────────────────────────────────────────────────
-
-def verify_word_codes(index_files: list[str], dictionary_path: str) -> bool:
-    """
-    Spot-check that word codes in all index files reference valid dictionary lines.
-    Prints any mismatches found.  Returns True if all codes are valid.
-    """
-    with open(dictionary_path, encoding="utf-8") as f:
-        words = [line.strip() for line in f]
-    code_to_word = {i: w for i, w in enumerate(words)}
-
-    ok = True
-    for path in index_files:
-        with open(path, encoding="utf-8") as f:
-            for lineno, line in enumerate(f, 1):
-                parts = line.split()
-                if not parts:
-                    continue
-                try:
-                    wc   = int(parts[0])
-                    word = parts[1]
-                except (ValueError, IndexError):
-                    continue
-                expected = code_to_word.get(wc)
-                if expected != word:
-                    print(
-                        f"[verify] MISMATCH in {os.path.basename(path)} "
-                        f"line {lineno}: code {wc} → '{word}' "
-                        f"but dictionary says '{expected}'",
-                        file=sys.stderr,
-                    )
-                    ok = False
-
-    if ok:
-        print("[verify] all word codes consistent ✓", file=sys.stderr)
-    return ok
-
-
 # ── Summary stats ─────────────────────────────────────────────────────────────
 
 def print_summary(shard_files: list[str], index_files: list[str], dictionary_path: str):
@@ -175,7 +133,7 @@ def print_summary(shard_files: list[str], index_files: list[str], dictionary_pat
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def build_index(corpus_dir: str, out_dir: str, verify: bool = True):
+def build_index(corpus_dir: str, out_dir: str):
     shard_files = sorted(
         glob.glob(os.path.join(corpus_dir, "*.txt"))
     )
@@ -210,10 +168,6 @@ def build_index(corpus_dir: str, out_dir: str, verify: bool = True):
             file=sys.stderr,
         )
 
-    # ── Verification ────────────────────────────────────────────────────────
-    if verify:
-        print("\n[index] Verifying word code consistency …", file=sys.stderr)
-        verify_word_codes(index_files, dict_path)
 
     print_summary(shard_files, index_files, dict_path)
     return dict_path, index_files

@@ -64,6 +64,7 @@ def search(
     doc_lengths_path: str  = "data/index/doc_lengths.json",
     attack_path:      str  = "data/attack/enterprise-attack.json",
     nvd_map_path:     str  = "data/index/technique_cve_map.json",
+    lsa_dir:          str  = "data/lsa_index",
     scorer:           str  = "bm25",
     top_n:            int  = 10,
     expand:           bool = True,
@@ -71,14 +72,14 @@ def search(
     explain:          bool = False,
     boolean_mode:     bool = False,
 ) -> list[tuple[str, float, str]]:
-    """
-    Run a full ThreatSearch query.  Returns ranked (doc_id, score, source) list.
-    Can be imported and called programmatically from evaluate.py.
-    """
-    # 1. Boolean pre-filter (if query contains AND / OR / NOT)
+
     import re as _re
+
+    # 1. Boolean pre-filter
     boolean_filter_ids = None
-    is_boolean = boolean_mode or bool(_re.search(r"\b(AND|OR|NOT)\b", query, _re.IGNORECASE))
+    is_boolean = boolean_mode or bool(
+        _re.search(r"\b(AND|OR|NOT)\b", query, _re.IGNORECASE)
+    )
     if is_boolean:
         from boolean_query import BooleanQueryHandler
         bq = BooleanQueryHandler(index_dir)
@@ -86,27 +87,20 @@ def search(
         if not boolean_filter_ids:
             print("[query] Boolean filter matched 0 documents.", file=sys.stderr)
             return []
-        print(f"[query] Boolean filter: {len(boolean_filter_ids):,} candidate docs", file=sys.stderr)
+        print(f"[query] Boolean filter: {len(boolean_filter_ids):,} candidate docs",
+              file=sys.stderr)
 
-    # 2. NLP processing (strip Boolean operators before stemming)
+    # 2. NLP — strip Boolean operators before stemming
     clean_query = _re.sub(r"\b(AND|OR|NOT)\b", " ", query, flags=_re.IGNORECASE)
     _, terms = process_line("Q " + clean_query)
     if not terms:
         print("[query] No indexable terms after NLP processing.", file=sys.stderr)
         return []
 
-    # 2. Load components (done once per session in practice; here per call for simplicity)
-    ranker = Ranker(
-        index_dir    = index_dir,
-        doc_lengths  = doc_lengths_path,
-        scorer       = scorer,
-        source_weight= source_weight,
-    )
-
+    # 3. ATT&CK expansion (must run before scoring in all branches)
     expanded_terms = terms
     term_weights   = None
     explain_text   = ""
-
     if expand and os.path.exists(attack_path):
         expander = QueryExpander(
             attack_path = attack_path,
@@ -116,15 +110,26 @@ def search(
         if explain:
             explain_text = expander.explain(terms)
 
-    # 3. Rank
-    t0      = time.perf_counter()
-    results = ranker.score(expanded_terms, top_n=top_n, term_weights=term_weights,
-                           candidate_ids=boolean_filter_ids)
+    # 4. Score — LSA or BM25/TF-IDF
+    t0 = time.perf_counter()
+    if scorer == "lsa":
+        from lsa_ranker import LSARanker
+        lsa_ranker = LSARanker(lsa_dir, os.path.join(index_dir, "dictionary.txt"))
+        results = lsa_ranker.query(expanded_terms, top_n=top_n,
+                                   term_weights=term_weights)
+        # Note: Boolean candidate_ids filter not supported in LSA mode
+        if boolean_filter_ids is not None:
+            results = [(d, s, src) for d, s, src in results
+                       if d in boolean_filter_ids]
+    else:
+        ranker = Ranker(index_dir, doc_lengths_path, scorer, source_weight)
+        results = ranker.score(expanded_terms, top_n=top_n,
+                               term_weights=term_weights,
+                               candidate_ids=boolean_filter_ids)
     elapsed = time.perf_counter() - t0
 
     print_results(results, terms, elapsed, explain_text)
     return results
-
 
 # ── Session mode: keep ranker/expander alive across multiple queries ───────────
 
@@ -191,7 +196,7 @@ if __name__ == "__main__":
     ap.add_argument("--doc-lengths",     default="data/index/doc_lengths.json")
     ap.add_argument("--attack",          default="data/attack/enterprise-attack.json")
     ap.add_argument("--nvd-map",         default="data/index/technique_cve_map.json")
-    ap.add_argument("--scorer",          default="bm25", choices=["bm25", "tfidf"])
+    ap.add_argument("--scorer",          default="bm25", choices=["bm25", "tfidf", "lsa"])
     ap.add_argument("--top",             default=10, type=int)
     ap.add_argument("--no-expand",       action="store_true")
     ap.add_argument("--explain",         action="store_true")

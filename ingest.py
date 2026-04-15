@@ -9,8 +9,6 @@ from pathlib import Path
 
 # ── Security-specific token pre-processing ────────────────────────────────────
 
-# These patterns are extracted BEFORE the regular lexer runs so that
-# structured identifiers are never split or stripped of digits.
 _ID_PATTERNS = [
     re.compile(r'\bCVE-\d{4}-\d+\b', re.IGNORECASE),       # CVE-2021-44228
     re.compile(r'\bCWE-\d+\b', re.IGNORECASE),              # CWE-79
@@ -20,8 +18,6 @@ _ID_PATTERNS = [
     re.compile(r'\bMS\d{2}-\d+\b', re.IGNORECASE),          # MS17-010
 ]
 
-# Security acronyms expanded to their full form so the stemmer handles them
-# consistently and they survive the alpha-only filter.
 _ACRONYMS = {
     "rce":   "remotecodeexecution",
     "lpe":   "localprivilegeescalation",
@@ -45,7 +41,6 @@ _ACRONYMS = {
 
 
 def extract_security_ids(text: str) -> list[str]:
-    """Return all structured security identifiers found in text as atomic tokens."""
     ids = []
     for pattern in _ID_PATTERNS:
         ids.extend(m.group(0).upper() for m in pattern.finditer(text))
@@ -53,28 +48,22 @@ def extract_security_ids(text: str) -> list[str]:
 
 
 def expand_acronyms(token: str) -> str:
-    """Replace known security acronyms with their expanded form."""
     return _ACRONYMS.get(token.lower(), token)
 
-
-# ── NVD ingestion ─────────────────────────────────────────────────────────────
 
 def _nvd_text(item: dict) -> str:
     """Extract all useful text fields from one NVD CVE item."""
     parts = []
 
-    # English description
     for desc in item.get("cve", {}).get("description", {}).get("description_data", []):
         if desc.get("lang") == "en":
             parts.append(desc.get("value", ""))
 
-    # CWE names (weakness type, very informative)
     for pd in item.get("cve", {}).get("problemtype", {}).get("problemtype_data", []):
         for d in pd.get("description", []):
             if d.get("lang") == "en":
                 parts.append(d.get("value", ""))
 
-    # Reference titles / tags (e.g. "Exploit", "Patch", "Vendor Advisory")
     for ref in item.get("cve", {}).get("references", {}).get("reference_data", []):
         name = ref.get("name", "")
         if name and not name.startswith("http"):
@@ -88,7 +77,6 @@ def _nvd_text(item: dict) -> str:
 def stream_nvd(nvd_dir: str):
     """
     Yield (doc_id, raw_text) for every CVE in all .json.gz files under nvd_dir.
-    Handles both NVD API 1.1 feed format (cve/CVE_Items) and 2.0 (vulnerabilities).
     """
     nvd_path = Path(nvd_dir)
     files = sorted(nvd_path.glob("*.json.gz")) + sorted(nvd_path.glob("*.json"))
@@ -128,8 +116,6 @@ def stream_nvd(nvd_dir: str):
             yield cve_id.upper(), f"{desc} {weaknesses}"
 
 
-# ── ATT&CK ingestion ──────────────────────────────────────────────────────────
-
 def _attack_text(obj: dict) -> str:
     """Extract indexable text from one ATT&CK STIX object."""
     parts = []
@@ -164,7 +150,7 @@ def _attack_id(obj: dict) -> str | None:
 def stream_attack(attack_path: str):
     """
     Yield (doc_id, raw_text) for every technique and sub-technique in the
-    ATT&CK STIX bundle.  Skips revoked or deprecated entries.
+    ATT&CK STIX bundle.  
     """
     with open(attack_path, encoding="utf-8") as f:
         bundle = json.load(f)
@@ -186,23 +172,20 @@ def stream_attack(attack_path: str):
 def tokenize_raw(doc_id: str, raw_text: str) -> str:
     """
     Convert (doc_id, raw_text) into a corpus line:
-        <doc-id> <token1> <token2> ...
+        <doc-id> <token1> <token2> 
 
     Security IDs are extracted first as atomic tokens, then the remaining
     text is split into whitespace-delimited tokens for the downstream NLP
     pipeline (nlp.py) to clean and stem.
     """
-    # 1. Pull structured IDs out first (they must survive intact)
     security_ids = extract_security_ids(raw_text)
 
-    # 2. Remaining text: strip the IDs to avoid double-counting, then split
     remaining = raw_text
     for pat in _ID_PATTERNS:
         remaining = pat.sub(" ", remaining)
 
     word_tokens = remaining.split()
 
-    # 3. Expand known acronyms
     word_tokens = [expand_acronyms(t) for t in word_tokens]
 
     all_tokens = security_ids + word_tokens
@@ -221,7 +204,6 @@ def ingest(nvd_dir: str | None, attack_path: str | None, out_dir: str,
            shard_size: int = 10_000):
     """
     Ingest NVD and/or ATT&CK, write corpus shards to out_dir.
-    Returns list of output file paths.
     """
     os.makedirs(out_dir, exist_ok=True)
     out_files = []
