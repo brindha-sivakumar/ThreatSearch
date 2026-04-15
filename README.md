@@ -9,6 +9,42 @@ ThreatSearch is a domain-adapted information retrieval system that lets security
 The system extends a basic inverted index pipeline with a full retrieval stack: BM25 ranked retrieval, Boolean AND/OR/NOT query handling, ATT&CK-aware query expansion, LSA dimensionality reduction for memory-safe semantic search, and LDA topic modeling over the CVE corpus.
 
 ---
+
+### Usage
+
+Full pipeline (raw data → index → search):
+    python main.py --data-dir /path/to/data
+
+Skip to query mode using existing indices:
+    python main.py --data-dir /path/to/data --query-only
+
+Run a single query and exit:
+    python main.py --data-dir /path/to/data --query-only --query "buffer overflow SMB"
+
+LSA semantic search:
+    python main.py --data-dir /path/to/data --query-only --query "heap corruption" --scorer lsa
+
+Skip specific phases (useful for partial reruns):
+    python main.py --data-dir /path/to/data --skip-ingest
+    python main.py --data-dir /path/to/data --skip-lsa --skip-lda
+
+Data directory layout expected
+-------------------------------
+    <data-dir>/
+    ├── nvd/                ← NVD .json or .json.gz feeds  (required)
+    └── attack/
+        └── enterprise-attack.json   ← ATT&CK STIX bundle (required)
+
+All outputs are written under <data-dir>/ automatically:
+    <data-dir>/corpus/      ← ingested corpus shards
+    <data-dir>/index/       ← inverted index files
+    <data-dir>/lsa_index/   ← LSA matrices
+    <data-dir>/lda/         ← LDA model and topic files
+    <data-dir>/viz/         ← visualizations
+    <data-dir>/eval/        ← evaluation results
+"""
+
+
 ### Setup
 
 ```python
@@ -101,7 +137,7 @@ Reads NVD JSON/JSON.gz feeds and the ATT&CK STIX bundle. Extracts CVE descriptio
 The security-aware NLP layer shared by all other components. Applies the same lexer/parser from hw1 extended with: structured ID detection (IDs bypass stemming and stopword filtering), an expanded security stopword list (words like "vulnerability", "advisory", "attacker" that appear in almost every document and add no discriminating value), Porter stemming on regular tokens, and a minimum token length filter. Every other component imports `process_line()` from this file.
 
 **`index.py`**  
-Two-pass inverted index builder. Pass 1 streams all corpus shards once to build the global vocabulary and write `dictionary.txt` — each word's line number is its word code, matching hw2's convention. Pass 2 re-streams each shard independently to build a local index file containing only terms with actual postings in that shard. Posting format: `<word-code> <word> <doc-frequency> (<doc-id>,<tf>,<source>) ...`. Includes a `verify_word_codes()` function that cross-checks every shard against the dictionary after writing.
+Two-pass inverted index builder. Pass 1 streams all corpus shards once to build the global vocabulary and write `dictionary.txt` — each word's line number is its word code, matching hw2's convention. Pass 2 re-streams each shard independently to build a local index file containing only terms with actual postings in that shard. Posting format: `<word-code> <word> <doc-frequency> (<doc-id>,<tf>,<source>) ...`. 
 
 ---
 ### Phase 2 — Ranked retrieval and query expansion

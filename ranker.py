@@ -35,20 +35,16 @@ class Ranker:
         self.scorer        = scorer
         self.source_weight = source_weight
 
-        print("[ranker] loading dictionary …", file=sys.stderr)
+        print("[ranker] loading dictionary", file=sys.stderr)
         self.word_code, self.code_word = self._load_dictionary()
 
-        print("[ranker] loading document lengths …", file=sys.stderr)
+        print("[ranker] loading document lengths", file=sys.stderr)
         self.doc_lengths, self.avg_dl, self.N = self._load_doc_lengths(doc_lengths)
 
-        # Shard index: word_code → list of shard file paths that might contain it.
-        # We build this lazily — shard files are only opened when a query term needs them.
-        self._shard_files = sorted(glob.glob(os.path.join(index_dir, "index_*.txt")))
-        if not self._shard_files:
+        self.merged_index = sorted(glob.glob(os.path.join(index_dir, "index_*.txt")))
+        if not self.merged_index:
             raise FileNotFoundError(f"No index_*.txt files found in {index_dir}")
 
-        # Posting-list cache: word_code → {doc_id: (tf, source)}
-        # Populated on first access per term, persists for the session.
         self._posting_cache: dict[int, dict[str, tuple[int, str]]] = {}
 
         # df cache: word_code → document frequency (summed across all shards)
@@ -102,10 +98,7 @@ class Ranker:
                     parts = line.split()
                     if not parts or int(parts[0]) != wc:
                         continue
-                    # Line format: wc word df (doc_id,tf,src) ...
-                    # df in this shard is parts[2]; we recount from postings for accuracy
                     for posting_str in parts[3:]:
-                        # parse (doc_id,tf,src) — no spaces inside
                         inner = posting_str.strip("()")
                         segments = inner.rsplit(",", 2)
                         if len(segments) != 3:
