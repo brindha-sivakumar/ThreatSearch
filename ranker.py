@@ -91,7 +91,7 @@ class Ranker:
         total_df = 0
 
         for shard_path in self.merged_index:
-            with open(self.shard_path, encoding="utf-8") as f:
+            with open(shard_path, encoding="utf-8") as f:
                 for line in f:
                     parts = line.split()
                     if not parts or int(parts[0]) != wc:
