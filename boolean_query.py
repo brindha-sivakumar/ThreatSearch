@@ -9,8 +9,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 from nlp import process_line
 
 
-# ── Tokenizer for Boolean terms ───────────────────────────────────────────────
-
 def _tokenize_term(term: str) -> list[str]:
     """
     Run a single Boolean operand through the NLP pipeline.
@@ -151,8 +149,6 @@ class _Parser:
         return ("TERM", tokens)
 
 
-# ── Posting-set loader ────────────────────────────────────────────────────────
-
 class BooleanQueryHandler:
     """
     Loads inverted index shards and executes Boolean queries.
@@ -191,7 +187,6 @@ class BooleanQueryHandler:
             file=sys.stderr,
         )
 
-    # ── Posting retrieval ─────────────────────────────────────────────────────
 
     def _load_posting_set(self, term: str) -> set[str]:
         """
@@ -258,7 +253,6 @@ class BooleanQueryHandler:
         self._universe = universe
         return universe
 
-    # ── AST evaluator ─────────────────────────────────────────────────────────
 
     def _evaluate(self, node) -> set[str]:
         kind = node[0]
@@ -287,7 +281,6 @@ class BooleanQueryHandler:
 
         raise ValueError(f"Unknown AST node type: {kind}")
 
-    # ── Public API ────────────────────────────────────────────────────────────
 
     def execute(self, query: str) -> set[str]:
         """
@@ -303,26 +296,9 @@ class BooleanQueryHandler:
         result = self._evaluate(ast)
         return result
 
-    def explain(self, query: str) -> str:
-        """Return a human-readable parse tree for debugging."""
-        tokens = _lex(query)
-        parser = _Parser(tokens)
-        ast    = parser.parse()
-        return self._fmt_ast(ast)
-
-    def _fmt_ast(self, node, indent: int = 0) -> str:
-        pad  = "  " * indent
-        kind = node[0]
-        if kind == "TERM":
-            return f"{pad}TERM({node[1]})"
-        if kind == "NOT":
-            return f"{pad}NOT\n" + self._fmt_ast(node[1], indent + 1)
-        left  = self._fmt_ast(node[1], indent + 1)
-        right = self._fmt_ast(node[2], indent + 1)
-        return f"{pad}{kind}\n{left}\n{right}"
 
 
-# ── Standalone CLI ─────────────────────────────────────────────────────────────
+
 
 if __name__ == "__main__":
     import argparse
@@ -333,8 +309,6 @@ if __name__ == "__main__":
     ap.add_argument("--index-dir",    default="data/index")
     ap.add_argument("--doc-lengths",  default="data/index/doc_lengths.json")
     ap.add_argument("--top",          default=10, type=int)
-    ap.add_argument("--explain",      action="store_true",
-                    help="Print parse tree for the query")
     ap.add_argument("--no-rank",      action="store_true",
                     help="Print Boolean matches without BM25 re-ranking")
     args = ap.parse_args()
@@ -343,10 +317,6 @@ if __name__ == "__main__":
 
     bq = BooleanQueryHandler(args.index_dir)
 
-    if args.explain:
-        print("\nParse tree:")
-        print(bq.explain(query_str))
-        print()
 
     print(f"Query: {query_str}")
     matched = bq.execute(query_str)

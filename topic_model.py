@@ -80,7 +80,6 @@ def topic_tokenize(text: str) -> list[str]:
     return tokens
 
 
-# ── Corpus reader ─────────────────────────────────────────────────────────────
 
 def stream_corpus(corpus_dir: str):
     """
@@ -125,7 +124,6 @@ def load_corpus_for_lda(corpus_dir: str, min_doc_len: int = 5):
     return doc_ids, texts
 
 
-# ── LDA training ──────────────────────────────────────────────────────────────
 
 def train_lda(texts: list[list[str]], n_topics: int = 20, passes: int = 10):
     """
@@ -179,7 +177,6 @@ def train_lda(texts: list[list[str]], n_topics: int = 20, passes: int = 10):
     return lda_model, dictionary, bow_corpus
 
 
-# ── Coherence scoring ─────────────────────────────────────────────────────────
 
 def compute_coherence(lda_model, texts, dictionary) -> float:
     """
@@ -202,7 +199,6 @@ def compute_coherence(lda_model, texts, dictionary) -> float:
         return 0.0
 
 
-# ── Output writers ────────────────────────────────────────────────────────────
 
 def extract_topic_terms(lda_model, n_top_words: int = 15) -> list[dict]:
     """
@@ -280,51 +276,6 @@ def print_topics(topics: list[dict], n_show: int = 5):
     print()
 
 
-# ── Query topic assignment ────────────────────────────────────────────────────
-
-def assign_query_to_topic(query: str, lda_dir: str):
-    """
-    Given a free-text query, return its most likely topic.
-    Useful for query routing: direct the query to documents in the same topic cluster.
-    """
-    try:
-        from gensim.models import LdaModel
-        from gensim import corpora
-    except ImportError:
-        print("gensim not installed.", file=sys.stderr)
-        return
-
-    model_path = os.path.join(lda_dir, "lda_model")
-    if not os.path.exists(model_path):
-        print(f"LDA model not found at {model_path}", file=sys.stderr)
-        return
-
-    lda_model  = LdaModel.load(model_path)
-    dictionary = lda_model.id2word
-
-    tokens = topic_tokenize(query)
-    bow        = dictionary.doc2bow(tokens)
-    dist       = lda_model.get_document_topics(bow, minimum_probability=0.0)
-    dist_sorted= sorted(dist, key=lambda x: x[1], reverse=True)
-
-    # Load topic terms for display
-    topic_path = os.path.join(lda_dir, "topic_terms.json")
-    topic_terms = {}
-    if os.path.exists(topic_path):
-        with open(topic_path) as f:
-            for t in json.load(f):
-                topic_terms[t["topic_id"]] = [w["word"] for w in t["terms"][:6]]
-
-    print(f"\nQuery: '{query}'")
-    print(f"Processed tokens: {tokens}")
-    print(f"\nTop 3 topic assignments:")
-    for tid, prob in dist_sorted[:3]:
-        terms = ", ".join(topic_terms.get(tid, []))
-        print(f"  Topic {tid:02d}  p={prob:.3f}  [{terms}]")
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def run(corpus_dir, out_dir, n_topics, passes, n_top_words, min_doc_len):
     doc_ids, texts = load_corpus_for_lda(corpus_dir, min_doc_len)
 
@@ -346,20 +297,14 @@ if __name__ == "__main__":
     ap.add_argument("--passes",       default=10,  type=int, help="Training passes")
     ap.add_argument("--top-words",    default=15,  type=int, help="Top words per topic to save")
     ap.add_argument("--min-doc-len",  default=5,   type=int, help="Skip docs shorter than this")
-    ap.add_argument("--query",        default=None,
-                    help="If set, assign this query to a topic instead of training")
-    ap.add_argument("--lda-dir",      default="data/lda",
-                    help="LDA model dir (for --query mode)")
     args = ap.parse_args()
 
-    if args.query:
-        assign_query_to_topic(args.query, args.lda_dir)
-    else:
-        run(
-            corpus_dir  = args.corpus_dir,
-            out_dir     = args.out_dir,
-            n_topics    = args.topics,
-            passes      = args.passes,
-            n_top_words = args.top_words,
-            min_doc_len = args.min_doc_len,
-        )
+   
+    run(
+        corpus_dir  = args.corpus_dir,
+        out_dir     = args.out_dir,
+        n_topics    = args.topics,
+        passes      = args.passes,
+        n_top_words = args.top_words,
+        min_doc_len = args.min_doc_len,
+    )

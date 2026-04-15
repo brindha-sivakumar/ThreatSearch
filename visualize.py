@@ -23,7 +23,6 @@ def _color(i: int) -> str:
     return _PALETTE[i % len(_PALETTE)]
 
 
-# ── Loader helpers ────────────────────────────────────────────────────────────
 
 def load_topic_terms(lda_dir: str) -> list[dict]:
     path = os.path.join(lda_dir, "topic_terms.json")
@@ -232,7 +231,6 @@ def plot_tactic_heatmap(
     print(f"[viz] tactic heatmap → {out_path}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     ap = argparse.ArgumentParser(description="ThreatSearch threat cluster visualizations")
@@ -241,11 +239,6 @@ def main():
     ap.add_argument("--map",        default="data/index/technique_cve_map.json",
                     help="technique→CVE map (for heatmap)")
     ap.add_argument("--out-dir",    default="data/viz")
-    ap.add_argument("--max-docs",   default=5000, type=int,
-                    help="Max CVEs to plot in scatter (default 5000, more = slower)")
-    ap.add_argument("--only",       default=None,
-                    choices=["wordclouds", "heatmap"],
-                    help="Generate only one visualization instead of all four")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -254,22 +247,18 @@ def main():
     doc_topics = load_doc_topics(args.lda_dir)
     print(f"[viz] {len(topics)} topics, {len(doc_topics):,} documents loaded")
 
-    run_all = args.only is None
-
-    if run_all or args.only == "wordclouds":
-        plot_wordclouds(
-            topics,
-            os.path.join(args.out_dir, "topic_wordclouds.png"),
-        )
-
-   
-    if run_all or args.only == "heatmap":
-        plot_tactic_heatmap(
-            args.lda_dir,
-            args.attack,
-            args.map,
-            os.path.join(args.out_dir, "tactic_heatmap.png"),
-        )
+    
+    plot_wordclouds(
+        topics,
+        os.path.join(args.out_dir, "topic_wordclouds.png"),
+    )
+    
+    plot_tactic_heatmap(
+        args.lda_dir,
+        args.attack,
+        args.map,
+        os.path.join(args.out_dir, "tactic_heatmap.png"),
+    )
 
     print(f"\n[viz] all outputs in {args.out_dir}/")
 

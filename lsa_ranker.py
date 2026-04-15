@@ -128,34 +128,7 @@ class LSARanker:
         """Return total RAM used by the two matrices in MB."""
         return (self.term_matrix.nbytes + self.doc_matrix.nbytes) / 1e6
 
-    def explain_query(self, query_terms: list[str]) -> str:
-        """
-        Show which query terms were found in the vocabulary and their
-        cosine similarity to each other (useful for debugging semantic drift).
-        """
-        lines = ["LSA query explanation:"]
-        found, missing = [], []
-        for t in query_terms:
-            if t in self.word_code:
-                found.append(t)
-            else:
-                missing.append(t)
-        lines.append(f"  found in vocabulary : {found}")
-        if missing:
-            lines.append(f"  not in vocabulary   : {missing}")
-
-        if len(found) >= 2:
-            lines.append("  pairwise cosine similarity between query terms:")
-            for i in range(len(found)):
-                for j in range(i + 1, len(found)):
-                    wi = self.word_code[found[i]]
-                    wj = self.word_code[found[j]]
-                    sim = float(self.term_matrix[wi] @ self.term_matrix[wj])
-                    lines.append(f"    {found[i]} ↔ {found[j]} : {sim:.3f}")
-        return "\n".join(lines)
-
-
-# ── Standalone test ───────────────────────────────────────────────────────────
+  
 
 if __name__ == "__main__":
     import sys
@@ -166,7 +139,6 @@ if __name__ == "__main__":
     ap.add_argument("--lsa-dir",   default="data/lsa_index")
     ap.add_argument("--dict",      default="data/index/dictionary.txt")
     ap.add_argument("--top",       default=10, type=int)
-    ap.add_argument("--explain",   action="store_true")
     ap.add_argument("query",       nargs="+")
     args = ap.parse_args()
 
@@ -178,10 +150,7 @@ if __name__ == "__main__":
         print("No indexable terms after NLP processing.")
         sys.exit(0)
 
-    if args.explain:
-        print(ranker.explain_query(terms))
-        print()
-
+ 
     t0      = time.perf_counter()
     results = ranker.query(terms, top_n=args.top)
     elapsed = time.perf_counter() - t0

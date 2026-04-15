@@ -10,8 +10,6 @@ from ranker   import Ranker
 from expander import QueryExpander
 
 
-# ── Display ───────────────────────────────────────────────────────────────────
-
 _CVE_BASE    = "https://nvd.nist.gov/vuln/detail/"
 _ATTACK_BASE = "https://attack.mitre.org/techniques/"
 
@@ -56,8 +54,6 @@ def print_results(
     print()
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def search(
     query:            str,
     index_dir:        str  = "data/index",
@@ -69,15 +65,13 @@ def search(
     top_n:            int  = 10,
     expand:           bool = True,
     source_weight:    bool = True,
-    explain:          bool = False,
-    boolean_mode:     bool = False,
 ) -> list[tuple[str, float, str]]:
 
     import re as _re
 
     # 1. Boolean pre-filter
     boolean_filter_ids = None
-    is_boolean = boolean_mode or bool(
+    is_boolean = bool(
         _re.search(r"\b(AND|OR|NOT)\b", query, _re.IGNORECASE)
     )
     if is_boolean:
@@ -100,15 +94,14 @@ def search(
     # 3. ATT&CK expansion (must run before scoring in all branches)
     expanded_terms = terms
     term_weights   = None
-    explain_text   = ""
+    
     if expand and os.path.exists(attack_path):
         expander = QueryExpander(
             attack_path = attack_path,
             nvd_mapping = nvd_map_path if os.path.exists(nvd_map_path) else None,
         )
         expanded_terms, term_weights = expander.expand(terms)
-        if explain:
-            explain_text = expander.explain(terms)
+       
 
     # 4. Score — LSA or BM25/TF-IDF
     t0 = time.perf_counter()
@@ -128,63 +121,8 @@ def search(
                                candidate_ids=boolean_filter_ids)
     elapsed = time.perf_counter() - t0
 
-    print_results(results, terms, elapsed, explain_text)
+    print_results(results, terms, elapsed)
     return results
-
-# ── Session mode: keep ranker/expander alive across multiple queries ───────────
-
-def interactive_session(args):
-    """
-    Load index once, then loop accepting queries from stdin.
-    Much faster than re-loading for each query.
-    """
-    print("[query] Loading index (one-time) …", file=sys.stderr)
-    ranker = Ranker(
-        index_dir    = args.index_dir,
-        doc_lengths  = args.doc_lengths,
-        scorer       = args.scorer,
-        source_weight= not args.no_source_weight,
-    )
-
-    expander = None
-    if not args.no_expand and os.path.exists(args.attack):
-        expander = QueryExpander(
-            attack_path = args.attack,
-            nvd_mapping = args.nvd_map if os.path.exists(args.nvd_map) else None,
-        )
-
-    print("\nThreatSearch ready. Type a query and press Enter. Ctrl-C to exit.\n")
-
-    while True:
-        try:
-            raw = input("query> ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\nBye.")
-            break
-
-        if not raw:
-            continue
-
-        _, terms = process_line("Q " + raw)
-        if not terms:
-            print("No indexable terms.\n")
-            continue
-
-        expanded_terms = terms
-        term_weights   = None
-        explain_text   = ""
-
-        if expander:
-            expanded_terms, term_weights = expander.expand(terms)
-            if args.explain:
-                explain_text = expander.explain(terms)
-
-        t0      = time.perf_counter()
-        results = ranker.score(expanded_terms, top_n=args.top, term_weights=term_weights)
-        elapsed = time.perf_counter() - t0
-
-        print_results(results, terms, elapsed, explain_text)
-
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(
@@ -199,26 +137,19 @@ if __name__ == "__main__":
     ap.add_argument("--scorer",          default="bm25", choices=["bm25", "tfidf", "lsa"])
     ap.add_argument("--top",             default=10, type=int)
     ap.add_argument("--no-expand",       action="store_true")
-    ap.add_argument("--explain",         action="store_true")
     ap.add_argument("--no-source-weight",action="store_true")
-    ap.add_argument("--boolean", action="store_true",
-                    help="Force Boolean mode (auto-detected from AND/OR/NOT in query)")
+    ap.add_argument("--lsa-dir",           default="data/lsa_index")
     args = ap.parse_args()
 
-    # Interactive mode if no query given
-    if not args.query:
-        interactive_session(args)
-    else:
-        search(
-            query            = " ".join(args.query),
-            index_dir        = args.index_dir,
-            doc_lengths_path = args.doc_lengths,
-            attack_path      = args.attack,
-            nvd_map_path     = args.nvd_map,
-            scorer           = args.scorer,
-            top_n            = args.top,
-            expand           = not args.no_expand,
-            source_weight    = not args.no_source_weight,
-            explain          = args.explain,
-            boolean_mode     = getattr(args, 'boolean', False),
-        )
+    search(
+        query            = " ".join(args.query),
+        index_dir        = args.index_dir,
+        doc_lengths_path = args.doc_lengths,
+        attack_path      = args.attack,
+        nvd_map_path     = args.nvd_map,
+        scorer           = args.scorer,
+        top_n            = args.top,
+        expand           = not args.no_expand,
+        source_weight    = not args.no_source_weight,
+        lsa_dir          = args.lsa_dir,
+    )
