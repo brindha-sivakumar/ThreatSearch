@@ -1,4 +1,3 @@
-
 import glob
 import json
 import math
@@ -6,7 +5,6 @@ import os
 import sys
 from collections import defaultdict
 
-# ── Constants ─────────────────────────────────────────────────────────────────
 BM25_K1 = 1.5
 BM25_B  = 0.75
 SOURCE_WEIGHTS = {"attack": 1.3, "nvd": 1.0}   # ATT&CK postings get a boost
@@ -92,24 +90,24 @@ class Ranker:
         merged_postings: dict[str, tuple[int, str]] = {}
         total_df = 0
 
-        
-        with open(self.merged_index, encoding="utf-8") as f:
-            for line in f:
-                parts = line.split()
-                if not parts or int(parts[0]) != wc:
-                    continue
-                for posting_str in parts[3:]:
-                    inner = posting_str.strip("()")
-                    segments = inner.rsplit(",", 2)
-                    if len(segments) != 3:
+        for shard_path in self.merged_index:
+            with open(self.shard_path, encoding="utf-8") as f:
+                for line in f:
+                    parts = line.split()
+                    if not parts or int(parts[0]) != wc:
                         continue
-                    doc_id, tf_str, src = segments
-                    try:
-                        tf = int(tf_str)
-                    except ValueError:
-                        continue
-                    merged_postings[doc_id] = (tf, src)
-                break   # found the term in this shard, move to next shard
+                    for posting_str in parts[3:]:
+                        inner = posting_str.strip("()")
+                        segments = inner.rsplit(",", 2)
+                        if len(segments) != 3:
+                            continue
+                        doc_id, tf_str, src = segments
+                        try:
+                            tf = int(tf_str)
+                        except ValueError:
+                            continue
+                        merged_postings[doc_id] = (tf, src)
+                    break  
 
         self._posting_cache[wc] = merged_postings
         self._df_cache[wc]      = len(merged_postings)
@@ -195,8 +193,6 @@ class Ranker:
         ranked = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
         return [(doc_id, score, doc_source[doc_id]) for doc_id, score in ranked[:top_n]]
 
-
-# ── Standalone test ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse
