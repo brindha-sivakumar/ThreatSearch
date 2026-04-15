@@ -93,7 +93,7 @@ class Ranker:
         total_df = 0
 
         
-        with open(merged_index, encoding="utf-8") as f:
+        with open(self.merged_index, encoding="utf-8") as f:
             for line in f:
                 parts = line.split()
                 if not parts or int(parts[0]) != wc:
