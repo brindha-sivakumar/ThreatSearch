@@ -170,17 +170,39 @@ def run_viz(data_dir: str) -> bool:
 
 def run_eval(data_dir: str) -> bool:
     print("\n[phase 3] evaluation — BM25 vs LSA (P@K, MRR, nDCG@K)")
-    from evaluate import run_evaluation, save_results, print_comparison
+    from evaluate import run_evaluation, save_results, print_comparison, load_ground_truth
+    import os as _os
+ 
+    attack_path = p(data_dir, "attack", "enterprise-attack.json")
+    nvd_map     = p(data_dir, "index", "technique_cve_map.json")
+    index_dir   = p(data_dir, "index")
+    lsa_dir     = p(data_dir, "lsa_index")
+ 
     try:
-        results = run_evaluation(
-            index_dir = p(data_dir, "index"),
-            lsa_dir   = p(data_dir, "lsa_index"),
-            attack    = p(data_dir, "attack", "enterprise-attack.json"),
-            scorers   = ["bm25", "lsa"],
-            top_k     = 10,
-        )
-        print_comparison(results, top_k=10)
-        save_results(results, out_dir=p(data_dir, "eval"))
+        queries = load_ground_truth(nvd_map, attack_path, min_relevant=2)
+        if not queries:
+            print("[eval] no evaluation queries — expander map may be empty", file=sys.stderr)
+            return False
+ 
+        all_results = {}
+        for scorer in ["bm25", "lsa"]:
+            if scorer == "lsa" and not check_lsa(data_dir):
+                print("[eval] skipping LSA — lsa_index not built", file=sys.stderr)
+                continue
+            all_results[scorer] = run_evaluation(
+                queries          = queries,
+                scorer           = scorer,
+                index_dir        = index_dir,
+                doc_lengths_path = p(index_dir, "doc_lengths.json"),
+                lsa_dir          = lsa_dir,
+                dictionary_path  = p(index_dir, "dictionary.txt"),
+                attack_path      = attack_path,
+                nvd_map_path     = nvd_map,
+                top_k            = 10,
+            )
+ 
+        print_comparison(all_results, top_k=10)
+        save_results(all_results, out_dir=p(data_dir, "eval"))
         return True
     except Exception as e:
         print(f"[error] evaluate failed: {e}", file=sys.stderr)
