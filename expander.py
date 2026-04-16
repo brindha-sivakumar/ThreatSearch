@@ -165,40 +165,8 @@ class QueryExpander:
         expanded_terms = list(weights.keys())
         return expanded_terms, weights
 
-    def explain(self, query_terms: list[str]) -> str:
-        """Return a human-readable explanation of what was expanded."""
-        lines = ["Query expansion:"]
-        matched: dict[str, set[str]] = defaultdict(set)
-        for term in query_terms:
-            for tid in self._kw_to_techniques.get(term, set()):
-                matched[term].add(tid)
-
-        if not any(matched.values()):
-            return "  (no ATT&CK technique matches found)"
-
-        for term, tids in matched.items():
-            for tid in sorted(tids):
-                name = self._technique_names.get(tid, "")
-                cves = self._technique_to_cves.get(tid, set())
-                cve_note = f" → {len(cves)} CVEs" if cves else ""
-                lines.append(f"  '{term}' → {tid} ({name}){cve_note}")
-        return "\n".join(lines)
-
-
+    
 # ── Build technique→CVE map ───────────────────────────────────────────────────
-#
-# Strategy (two sources, merged):
-#
-# Source 1 — ATT&CK STIX direct CVE references (primary, authoritative)
-#   ATT&CK technique objects have external_references with source_name="cve"
-#   that directly link a technique to a CVE that exploits it.
-#   Example: T1190 (Exploit Public-Facing Application) references CVE-2021-44228.
-#   This is the authoritative mapping and is already in enterprise-attack.json.
-#
-# Source 2 — keyword similarity between NVD descriptions and ATT&CK technique text
-#   For techniques with no direct CVE references, find CVEs whose descriptions
-#   share significant vocabulary with the technique's name + description.
-#   This is a heuristic fallback that dramatically increases coverage.
 
 
 def build_technique_cve_map(
@@ -208,11 +176,12 @@ def build_technique_cve_map(
     min_overlap: int = 3,
 ):
     """
-    Build technique→CVE relevance map using two strategies:
+    Build technique→CVE relevance map via keyword overlap
 
-    1. Direct CVE references in ATT&CK STIX (authoritative, ~200–400 pairs)
-    2. Keyword overlap between ATT&CK technique text and NVD CVE descriptions
-       (heuristic fallback, requires corpus_dir, produces thousands of pairs)
+       For each NVD CVE, counts how many stemmed tokens it shares with each
+    ATT&CK technique's name + description. If the overlap meets min_overlap,
+    the CVE is recorded as relevant to that technique.
+ 
 
     Parameters
     ----------
@@ -228,30 +197,19 @@ def build_technique_cve_map(
         bundle = json.load(f)
     objects = bundle if isinstance(bundle, list) else bundle.get("objects", [])
 
-    # ── Source 1: direct CVE references in ATT&CK STIX ───────────────────────
-    mapping: dict[str, set[str]] = defaultdict(set)
-    technique_keywords: dict[str, set[str]] = {}   # for source 2 fallback
-
     cve_pat = re.compile(r'^CVE-\d{4}-\d+$', re.IGNORECASE)
-
+    
+    
+    # Build keyword set per technique from name + description + detection + platforms
+    technique_keywords: dict[str, set[str]] = {}
     for obj in objects:
         if obj.get("type") != "attack-pattern":
             continue
         if obj.get("revoked") or obj.get("x_mitre_deprecated"):
             continue
-
         tid = _attack_external_id(obj)
         if not tid:
             continue
-        tid = tid.upper()
-
-        for ref in obj.get("external_references", []):
-            if ref.get("source_name", "").lower() == "cve":
-                cve_id = ref.get("external_id", "").upper()
-                if cve_pat.match(cve_id):
-                    mapping[tid].add(cve_id)
-
-        # Build keyword set for source 2
         text = " ".join([
             obj.get("name", ""),
             obj.get("description", "")[:500],
@@ -259,21 +217,14 @@ def build_technique_cve_map(
             " ".join(obj.get("x_mitre_platforms", [])),
         ])
         _, kws = _pl("Q " + text)
-        technique_keywords[tid] = set(kws)
-
-    direct_pairs = sum(len(v) for v in mapping.values())
-    print(f"[expander] Source 1 (STIX direct): {len(mapping)} techniques, "
-          f"{direct_pairs:,} CVE pairs", file=sys.stderr)
-
-    # ── Source 2: keyword overlap with NVD corpus ─────────────────────────────
+        technique_keywords[tid.upper()] = set(kws)
+ 
+    # Keyword overlap: scan NVD corpus shards
+    mapping: dict[str, set[str]] = defaultdict(set)
     if corpus_dir and os.path.isdir(corpus_dir):
-        print(f"[expander] Source 2 (keyword overlap, min_overlap={min_overlap}): "
+        print(f"[expander] keyword overlap (min_overlap={min_overlap}): "
               f"scanning corpus …", file=sys.stderr)
-
-        nvd_shards = sorted(glob.glob(os.path.join(corpus_dir, "nvd_*.txt")))
-        matched = 0
-
-        for path in nvd_shards:
+        for path in sorted(glob.glob(os.path.join(corpus_dir, "nvd_*.txt"))):
             with open(path, encoding="utf-8") as f:
                 for line in f:
                     doc_id, tokens = _pl(line)
@@ -283,18 +234,13 @@ def build_technique_cve_map(
                     for tid, kws in technique_keywords.items():
                         if len(doc_set & kws) >= min_overlap:
                             mapping[tid].add(doc_id.upper())
-                            matched += 1
-
-        kw_pairs = sum(len(v) for v in mapping.values()) - direct_pairs
-        print(f"[expander] Source 2 added {kw_pairs:,} additional CVE pairs",
-              file=sys.stderr)
-
-    # ── Write output ─────────────────────────────────────────────────────────
+ 
+    # Write output
     out = {k: sorted(v) for k, v in mapping.items() if v}
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
-
+ 
     total = sum(len(v) for v in out.values())
     print(f"[expander] wrote {len(out)} techniques → {total:,} CVE pairs → {out_path}")
     return out
