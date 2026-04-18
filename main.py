@@ -5,6 +5,7 @@ import re
 import sys
 import time
 
+
 def p(data_dir: str, *parts: str) -> str:
     return os.path.join(data_dir, *parts)
 
@@ -28,7 +29,7 @@ def check_data(data_dir: str) -> bool:
 
 
 def check_index(data_dir: str) -> bool:
-    """Check that a built index exists — required for query mode."""
+    """Check that a built index exists."""
     index_dir = p(data_dir, "index")
     return (
         os.path.exists(p(data_dir, "index", "dictionary.txt")) and
@@ -44,8 +45,6 @@ def check_lsa(data_dir: str) -> bool:
         os.path.exists(p(data_dir, "lsa_index", "doc_matrix.npy"))
     )
 
-
-# ── Phase runners ────────────────────────────
 
 def run_ingest(data_dir: str) -> bool:
     print("\n[phase 1] ingestion — NVD + ATT&CK -> corpus shards")
@@ -110,8 +109,8 @@ def run_index(data_dir: str) -> bool:
     return True
 
 
-def run_lsa(data_dir: str, components: int = 300) -> bool:
-    print(f"\n[lsa] building latent semantic index (k={components})")
+def run_lsa(data_dir: str) -> bool:
+    print(f"\n[lsa] building latent semantic index")
     from lsa_build import build
     try:
         build(
@@ -119,7 +118,7 @@ def run_lsa(data_dir: str, components: int = 300) -> bool:
             dictionary_path  = p(data_dir, "index", "dictionary.txt"),
             doc_lengths_path = p(data_dir, "index", "doc_lengths.json"),
             out_dir          = p(data_dir, "lsa_index"),
-            n_components     = components,
+            n_components     = 300,
         )
         return True
     except Exception as e:
@@ -127,15 +126,15 @@ def run_lsa(data_dir: str, components: int = 300) -> bool:
         return False
 
 
-def run_lda(data_dir: str, topics: int = 20, passes: int = 10) -> bool:
-    print(f"\n[phase 3] LDA topic modeling ({topics} topics, {passes} passes)")
+def run_lda(data_dir: str) -> bool:
+    print("\n[phase 3] LDA topic modeling (20 topics, 10 passes)")
     from topic_model import run as lda_run
     try:
         lda_run(
             corpus_dir  = p(data_dir, "corpus"),
             out_dir     = p(data_dir, "lda"),
-            n_topics    = topics,
-            passes      = passes,
+            n_topics    = 20,
+            passes      = 10,
             n_top_words = 15,
             min_doc_len = 5,
         )
@@ -168,56 +167,15 @@ def run_viz(data_dir: str) -> bool:
         return False
 
 
-def run_eval(data_dir: str) -> bool:
-    print("\n[phase 3] evaluation — BM25 vs LSA (P@K, MRR, nDCG@K)")
-    from evaluate import run_evaluation, save_results, print_comparison, load_ground_truth
-    import os as _os
- 
-    attack_path = p(data_dir, "attack", "enterprise-attack.json")
-    nvd_map     = p(data_dir, "index", "technique_cve_map.json")
-    index_dir   = p(data_dir, "index")
-    lsa_dir     = p(data_dir, "lsa_index")
- 
-    try:
-        queries = load_ground_truth(nvd_map, attack_path, min_relevant=2)
-        if not queries:
-            print("[eval] no evaluation queries — expander map may be empty", file=sys.stderr)
-            return False
- 
-        all_results = {}
-        for scorer in ["bm25", "lsa"]:
-            if scorer == "lsa" and not check_lsa(data_dir):
-                print("[eval] skipping LSA — lsa_index not built", file=sys.stderr)
-                continue
-            all_results[scorer] = run_evaluation(
-                queries          = queries,
-                scorer           = scorer,
-                index_dir        = index_dir,
-                doc_lengths_path = p(index_dir, "doc_lengths.json"),
-                lsa_dir          = lsa_dir,
-                dictionary_path  = p(index_dir, "dictionary.txt"),
-                attack_path      = attack_path,
-                nvd_map_path     = nvd_map,
-                top_k            = 10,
-            )
- 
-        print_comparison(all_results, top_k=10)
-        save_results(all_results, out_dir=p(data_dir, "eval"))
-        return True
-    except Exception as e:
-        print(f"[error] evaluate failed: {e}", file=sys.stderr)
-        return False
 
-
-
-def run_query(data_dir: str, query: str, scorer: str, top: int, no_expand: bool):
+def run_query(data_dir: str, query: str, scorer: str, no_expand: bool):
     """Run a single query against the built index and print results."""
     if not check_index(data_dir):
         print("[error] Index not found. Run the full pipeline first.", file=sys.stderr)
         sys.exit(1)
 
     if scorer == "lsa" and not check_lsa(data_dir):
-        print("[error] LSA index not found. Run without --skip-lsa first.", file=sys.stderr)
+        print("[error] LSA index not found. Run the full pipeline first (without --skip-index).", file=sys.stderr)
         sys.exit(1)
 
     sys.path.insert(0, os.path.dirname(__file__) or ".")
@@ -270,7 +228,7 @@ def run_query(data_dir: str, query: str, scorer: str, top: int, no_expand: bool)
         results = Ranker(
             index_dir, p(index_dir, "doc_lengths.json"), scorer
         ).score(
-            expanded_terms, top_n=top,
+            expanded_terms, top_n=10,
             term_weights=term_weights,
             candidate_ids=boolean_filter_ids,
         )
@@ -301,8 +259,6 @@ def run_query(data_dir: str, query: str, scorer: str, top: int, no_expand: bool)
     print()
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def main():
     ap = argparse.ArgumentParser(
         description="ThreatSearch — pipeline runner and search interface",
@@ -312,25 +268,22 @@ def main():
                     help="Directory containing nvd/ and attack/ subdirectories")
     ap.add_argument("--query",          default=None,
                     help="Run this query and exit (skips pipeline build)")
-    ap.add_argument("--skip-ingest",    action="store_true")
-    ap.add_argument("--skip-index",     action="store_true")
-    ap.add_argument("--skip-lsa",       action="store_true")
-    ap.add_argument("--skip-lda",       action="store_true")
-    ap.add_argument("--skip-eval",      action="store_true")
-    ap.add_argument("--lsa-components", type=int, default=300)
-    ap.add_argument("--lda-topics",     type=int, default=20)
-    ap.add_argument("--lda-passes",     type=int, default=10)
+    ap.add_argument("--skip-ingest",    action="store_true",
+                    help="Skip ingestion — use existing corpus shards")
+    ap.add_argument("--skip-index",     action="store_true",
+                    help="Skip index build — use existing index files")
     ap.add_argument("--scorer",         default="bm25",
-                    choices=["bm25", "tfidf", "lsa"])
-    ap.add_argument("--top",            type=int, default=10)
-    ap.add_argument("--no-expand",      action="store_true")
+                    choices=["bm25", "tfidf", "lsa"],
+                    help="Ranking model: bm25 (default), tfidf, or lsa (semantic)")
+    ap.add_argument("--no-expand",      action="store_true",
+                    help="Disable ATT&CK query expansion")
 
     args     = ap.parse_args()
     data_dir = os.path.abspath(args.data_dir)
 
     # Query-only shortcut
     if args.query:
-        run_query(data_dir, args.query, args.scorer, args.top, args.no_expand)
+        run_query(data_dir, args.query, args.scorer, args.no_expand)
         return
 
     # Full pipeline
@@ -346,17 +299,14 @@ def main():
     if not args.skip_index and not run_index(data_dir):
         failures.append("index")
 
-    if not args.skip_lsa and not run_lsa(data_dir, components=args.lsa_components):
+    if not run_lsa(data_dir):
         failures.append("lsa")
 
-    if not args.skip_lda:
-        if not run_lda(data_dir, topics=args.lda_topics, passes=args.lda_passes):
-            failures.append("lda")
-        else:
-            run_viz(data_dir)
+    if not run_lda(data_dir):
+        failures.append("lda")
+    else:
+        run_viz(data_dir)
 
-    if not args.skip_eval and not run_eval(data_dir):
-        failures.append("eval")
 
     elapsed = time.perf_counter() - t0
     print(f"\n[done] {elapsed:.1f}s", end="")

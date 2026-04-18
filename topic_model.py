@@ -8,13 +8,6 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 from nlp import process_line
 
-# ── Topic-model-specific NLP ──────────────────────────────────────────────────
-# Separate from the index NLP pipeline intentionally:
-#   - No stemming        → readable topic words ("injection" not "inject")
-#   - No structured IDs  → CVE-XXX / CWE-XXX add no topical meaning
-#   - Aggressive extras  → boilerplate CVE words that survive standard stopwords
-#   - Min word length 4  → drops "fix", "due", "set", "call" etc.
-
 import re as _re
 import string as _string
 
@@ -80,7 +73,6 @@ def topic_tokenize(text: str) -> list[str]:
     return tokens
 
 
-
 def stream_corpus(corpus_dir: str):
     """
     Yield (doc_id, raw_text) for every NVD document in corpus shards.
@@ -124,7 +116,6 @@ def load_corpus_for_lda(corpus_dir: str, min_doc_len: int = 5):
     return doc_ids, texts
 
 
-
 def train_lda(texts: list[list[str]], n_topics: int = 20, passes: int = 10):
     """
     Build gensim dictionary + corpus, train LDA model.
@@ -166,10 +157,9 @@ def train_lda(texts: list[list[str]], n_topics: int = 20, passes: int = 10):
         id2word        = dictionary,
         num_topics     = n_topics,
         passes         = passes,
-        alpha          = "auto",      # asymmetric prior — better for specialised corpora
+        alpha          = "auto",
         eta            = "auto",
         random_state   = 42,
-        per_word_topics= True,
     )
     elapsed = time.perf_counter() - t0
     print(f"[lda] training complete in {elapsed:.1f}s", file=sys.stderr)
@@ -178,26 +168,29 @@ def train_lda(texts: list[list[str]], n_topics: int = 20, passes: int = 10):
 
 
 
-def compute_coherence(lda_model, texts, dictionary) -> float:
+def compute_coherence(lda_model, texts, dictionary, sample: int = 20000) -> float:
     """
-    Compute C_v coherence score (higher = more interpretable topics).
-    Typical range: 0.4–0.7. Above 0.5 is considered good.
+    Compute C_v coherence score on a sample of documents.
+    Full-corpus coherence on 200k+ docs hangs — sampling gives a good
+    enough estimate in seconds instead of hours.
     """
     try:
+        import random
         from gensim.models import CoherenceModel
+        sample_texts = random.sample(texts, min(sample, len(texts)))
         cm = CoherenceModel(
             model      = lda_model,
-            texts      = texts,
+            texts      = sample_texts,
             dictionary = dictionary,
             coherence  = "c_v",
         )
         score = cm.get_coherence()
-        print(f"[lda] coherence (C_v): {score:.4f}", file=sys.stderr)
+        print(f"[lda] coherence (C_v): {score:.4f}  (sampled {len(sample_texts):,} docs)",
+              file=sys.stderr)
         return score
     except Exception as e:
         print(f"[lda] coherence computation failed: {e}", file=sys.stderr)
         return 0.0
-
 
 
 def extract_topic_terms(lda_model, n_top_words: int = 15) -> list[dict]:
@@ -217,17 +210,16 @@ def extract_topic_terms(lda_model, n_top_words: int = 15) -> list[dict]:
 
 def assign_doc_topics(lda_model, bow_corpus, doc_ids) -> list[dict]:
     """
-    Assign each document to its dominant topic.
-    Returns list of { doc_id, dominant_topic, confidence }.
+    Assign each document to its dominant topic using batch inference.
+    Uses get_document_topics on the full corpus at once — much faster
+    than calling it once per document for large corpora.
     """
     assignments = []
-    for doc_id, bow in zip(doc_ids, bow_corpus):
-        topic_dist = lda_model.get_document_topics(bow, minimum_probability=0.0)
-        dominant   = max(topic_dist, key=lambda x: x[1])
+    for doc_id, topic_dist in zip(doc_ids, lda_model[bow_corpus]):
+        dominant = max(topic_dist, key=lambda x: x[1])
         assignments.append({
             "doc_id"         : doc_id,
             "dominant_topic" : int(dominant[0]),
-            "confidence"     : float(dominant[1]),
         })
     return assignments
 
@@ -249,10 +241,10 @@ def save_outputs(
     with open(topic_path, "w", encoding="utf-8") as f:
         json.dump(topics, f, indent=2)
 
-    # Doc→topic assignments JSON
+    # Doc→topic assignments JSON (no indent — 246k entries with indent=2 is ~80 MB)
     doc_path = os.path.join(out_dir, "doc_topics.json")
     with open(doc_path, "w", encoding="utf-8") as f:
-        json.dump(assignments, f, indent=2)
+        json.dump(assignments, f, separators=(",", ":"))
 
     # Coherence score
     coh_path = os.path.join(out_dir, "coherence.txt")
@@ -274,6 +266,7 @@ def print_topics(topics: list[dict], n_show: int = 5):
         terms = ", ".join(w["word"] for w in t["terms"][:8])
         print(f"  Topic {t['topic_id']:02d}: {terms}")
     print()
+
 
 
 def run(corpus_dir, out_dir, n_topics, passes, n_top_words, min_doc_len):
@@ -299,7 +292,6 @@ if __name__ == "__main__":
     ap.add_argument("--min-doc-len",  default=5,   type=int, help="Skip docs shorter than this")
     args = ap.parse_args()
 
-   
     run(
         corpus_dir  = args.corpus_dir,
         out_dir     = args.out_dir,
