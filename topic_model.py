@@ -3,10 +3,18 @@ import glob
 import json
 import os
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from nlp import process_line
+
+# ── Topic-model-specific NLP ──────────────────────────────────────────────────
+# Separate from the index NLP pipeline intentionally:
+#   - No stemming        → readable topic words ("injection" not "inject")
+#   - No structured IDs  → CVE-XXX / CWE-XXX add no topical meaning
+#   - Aggressive extras  → boilerplate CVE words that survive standard stopwords
+#   - Min word length 4  → drops "fix", "due", "set", "call" etc.
 
 import re as _re
 import string as _string
@@ -116,7 +124,7 @@ def load_corpus_for_lda(corpus_dir: str, min_doc_len: int = 5):
     return doc_ids, texts
 
 
-def train_lda(texts: list[list[str]], n_topics: int = 20, passes: int = 10):
+def train_lda(texts: list[list[str]], n_topics: int = 20, passes: int = 5):
     """
     Build gensim dictionary + corpus, train LDA model.
 
@@ -124,48 +132,48 @@ def train_lda(texts: list[list[str]], n_topics: int = 20, passes: int = 10):
     ----------
     texts    : list of token lists (one per document)
     n_topics : number of latent topics to discover
-    passes   : training passes over the corpus (more = better, slower)
+    passes   : training passes (5 is enough for stable topics on large corpora)
 
     Returns
     -------
-    lda_model, gensim_dictionary, gensim_corpus
+    lda_model, gensim_dictionary, bow_corpus (MmCorpus on disk, not a list)
     """
     try:
-        import gensim
         from gensim import corpora
         from gensim.models import LdaModel
+        from gensim.corpora import MmCorpus
     except ImportError:
         print("[lda] ERROR: gensim not installed. Run: pip install gensim", file=sys.stderr)
         sys.exit(1)
 
     print("[lda] building gensim dictionary …", file=sys.stderr)
     dictionary = corpora.Dictionary(texts)
-
-    # Filter extremes: drop terms in <5 docs or >50% of docs (noise reduction)
-    # no_above=0.4: drops terms in >40% of docs (near-universal boilerplate)
-    # no_below=10: requires a term to appear in at least 10 docs
     dictionary.filter_extremes(no_below=10, no_above=0.4)
     print(f"[lda] dictionary after filtering: {len(dictionary):,} terms", file=sys.stderr)
 
+    # Write bow corpus to a temp file on disk instead of holding it in RAM.
+    # MmCorpus streams from disk during training — avoids holding 233k lists in memory.
     print("[lda] building bag-of-words corpus …", file=sys.stderr)
-    bow_corpus = [dictionary.doc2bow(text) for text in texts]
+    bow_path = os.path.join(tempfile.gettempdir(), "threatsearch_bow.mm")
+    MmCorpus.serialize(bow_path, (dictionary.doc2bow(t) for t in texts))
+    bow_corpus = MmCorpus(bow_path)
 
     print(f"[lda] training LDA  n_topics={n_topics}  passes={passes} …", file=sys.stderr)
     t0 = time.perf_counter()
     lda_model = LdaModel(
-        corpus         = bow_corpus,
-        id2word        = dictionary,
-        num_topics     = n_topics,
-        passes         = passes,
-        alpha          = "auto",
-        eta            = "auto",
-        random_state   = 42,
+        corpus       = bow_corpus,
+        id2word      = dictionary,
+        num_topics   = n_topics,
+        passes       = passes,
+        alpha        = "symmetric",   
+        eta          = "auto",
+        random_state = 42,
+        chunksize    = 2000,          
     )
     elapsed = time.perf_counter() - t0
     print(f"[lda] training complete in {elapsed:.1f}s", file=sys.stderr)
 
     return lda_model, dictionary, bow_corpus
-
 
 
 def compute_coherence(lda_model, texts, dictionary, sample: int = 20000) -> float:
@@ -233,7 +241,6 @@ def save_outputs(
 ):
     os.makedirs(out_dir, exist_ok=True)
 
-    # Gensim model (for later query assignment)
     lda_model.save(os.path.join(out_dir, "lda_model"))
 
     # Topic terms JSON

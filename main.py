@@ -134,7 +134,7 @@ def run_lda(data_dir: str) -> bool:
             corpus_dir  = p(data_dir, "corpus"),
             out_dir     = p(data_dir, "lda"),
             n_topics    = 20,
-            passes      = 10,
+            passes      = 5,
             n_top_words = 15,
             min_doc_len = 5,
         )
